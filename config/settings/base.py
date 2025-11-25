@@ -34,8 +34,13 @@ INSTALLED_APPS = [
     # Third party apps
     'rest_framework',
     'django_rq',
+    'django_filters',
     
-    # Local apps - will be added in Task 1.5
+    # Local apps
+    'apps.core',
+    'apps.operations',
+    'apps.processors',
+    'apps.api',
 ]
 
 MIDDLEWARE = [
