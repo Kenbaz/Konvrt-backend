@@ -38,7 +38,7 @@ SECURE_HSTS_PRELOAD = True
 
 # Logging - Less verbose in production
 LOGGING['root']['level'] = 'INFO'
-LOGGING['loggers']['apps.jobs']['level'] = 'INFO'
+LOGGING['loggers']['apps.operations']['level'] = 'INFO'
 LOGGING['loggers']['apps.processors']['level'] = 'INFO'
 
 # Email backend for production

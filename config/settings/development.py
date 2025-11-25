@@ -36,8 +36,8 @@ INTERNAL_IPS = [
 
 # Logging - More verbose in development
 LOGGING['root']['level'] = 'DEBUG'
-LOGGING['loggers']['apps.jobs']['level'] = 'DEBUG'
+LOGGING['loggers']['apps.operations']['level'] = 'DEBUG'
 LOGGING['loggers']['apps.processors']['level'] = 'DEBUG'
 
-# Email backend for development (console output)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# Email backend for development
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'

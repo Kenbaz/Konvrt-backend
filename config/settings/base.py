@@ -216,7 +216,7 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
-        'apps.jobs': {
+        'apps.operations': {
             'handlers': ['console', 'file'],
             'level': 'DEBUG',
             'propagate': False,
