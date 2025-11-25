@@ -1,0 +1,27 @@
+# Include base requirements
+-r base.txt
+
+asgiref==3.8.1
+Django==4.2.7
+django-cors-headers==4.3.1
+django-filter==23.5
+environ==1.0
+redis==5.0.1
+sqlparse==0.5.3
+tzdata==2025.2
+
+# Django Debug Toolbar
+django-debug-toolbar==4.2.0
+
+# Testing
+pytest==7.4.3
+pytest-django==4.7.0
+pytest-cov==4.1.0
+
+# Code quality
+black==23.11.0
+flake8==6.1.0
+isort==5.12.0
+
+# Development utilities
+ipython==8.18.1
