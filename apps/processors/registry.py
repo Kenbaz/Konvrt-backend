@@ -43,7 +43,7 @@ class ParameterSchema:
     Schema definition for an operation parameter.
     
     Attributes:
-        name: The parameter name
+        param_name: The parameter name
         param_type: The type of the parameter
         required: Whether the parameter is required
         default: Default value if not provided
@@ -52,7 +52,7 @@ class ParameterSchema:
         max_value: Maximum value for numeric types
         choices: List of valid choices for choice type
     """
-    name: str
+    param_name: str
     param_type: ParameterType
     required: bool = False
     default: Any = None
@@ -64,7 +64,7 @@ class ParameterSchema:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         result = {
-            "name": self.name,
+            "param_name": self.param_name,
             "type": self.param_type.value,
             "required": self.required,
             "description": self.description,
@@ -86,7 +86,7 @@ class OperationDefinition:
     Complete definition of a processing operation.
     
     Attributes:
-        name: Unique identifier for the operation
+        operation_name: Unique identifier for the operation
         media_type: Type of media this operation processes
         handler: The function that performs the operation
         parameters: List of parameter schemas
@@ -94,7 +94,7 @@ class OperationDefinition:
         input_formats: List of supported input formats
         output_formats: List of possible output formats
     """
-    name: str
+    operation_name: str
     media_type: MediaType
     handler: Callable
     parameters: List[ParameterSchema] = field(default_factory=list)
@@ -105,7 +105,7 @@ class OperationDefinition:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation for API responses."""
         return {
-            "name": self.name,
+            "operation_name": self.operation_name,
             "media_type": self.media_type.value,
             "description": self.description,
             "parameters": [p.to_dict() for p in self.parameters],
@@ -126,13 +126,13 @@ class OperationRegistry:
     _initialized: bool = False
     
     def __new__(cls) -> "OperationRegistry":
-        """Implement singleton pattern."""
+        """Create new singleton instance"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
     def __init__(self):
-        """Initialize the registry (only once due to singleton)."""
+        """Initialize the registry."""
         if not self._initialized:
             self._operations: Dict[str, OperationDefinition] = {}
             self._initialized = True
@@ -140,7 +140,7 @@ class OperationRegistry:
     
     def register_operation(
         self,
-        name: str,
+        operation_name: str,
         media_type: MediaType,
         handler: Callable,
         parameters: Optional[List[ParameterSchema]] = None,
@@ -164,36 +164,36 @@ class OperationRegistry:
             OperationRegistrationError: If registration fails
         """
         # Validate name
-        if not name or not isinstance(name, str):
-            raise OperationRegistrationError(name or "unknown", "Name must be a non-empty string")
+        if not operation_name or not isinstance(operation_name, str):
+            raise OperationRegistrationError(operation_name or "unknown", "Name must be a non-empty string")
         
-        if not name.replace("_", "").isalnum():
+        if not operation_name.replace("_", "").isalnum():
             raise OperationRegistrationError(
-                name, 
+                operation_name, 
                 "Name must contain only alphanumeric characters and underscores"
             )
         
         # Check for duplicates
-        if name in self._operations:
+        if operation_name in self._operations:
             raise OperationRegistrationError(
-                name,
-                f"Operation '{name}' is already registered"
+                operation_name,
+                f"Operation '{operation_name}' is already registered"
             )
         
         # Validate media type
         if not isinstance(media_type, MediaType):
             raise OperationRegistrationError(
-                name,
+                operation_name,
                 f"Invalid media_type: {media_type}. Must be a MediaType enum value."
             )
         
         # Validate handler
         if not callable(handler):
-            raise OperationRegistrationError(name, "Handler must be callable")
+            raise OperationRegistrationError(operation_name, "Handler must be callable function")
         
         # Create operation definition
         operation = OperationDefinition(
-            name=name,
+            operation_name=operation_name,
             media_type=media_type,
             handler=handler,
             parameters=parameters or [],
@@ -202,15 +202,15 @@ class OperationRegistry:
             output_formats=output_formats or [],
         )
         
-        self._operations[name] = operation
-        logger.info(f"Registered operation: {name} (media_type={media_type.value})")
+        self._operations[operation_name] = operation
+        logger.info(f"Registered operation: {operation_name} (media_type={media_type.value})")
     
-    def get_operation(self, name: str) -> OperationDefinition:
+    def get_operation(self, operation_name: str) -> OperationDefinition:
         """
         Retrieve an operation by name.
         
         Args:
-            name: The operation name to look up
+            operation_name: The operation name to look up
             
         Returns:
             The OperationDefinition for the operation
@@ -218,21 +218,21 @@ class OperationRegistry:
         Raises:
             OperationNotFoundError: If operation doesn't exist
         """
-        if name not in self._operations:
-            raise OperationNotFoundError(name)
-        return self._operations[name]
+        if operation_name not in self._operations:
+            raise OperationNotFoundError(operation_name)
+        return self._operations[operation_name]
     
-    def is_registered(self, name: str) -> bool:
+    def is_registered(self, operation_name: str) -> bool:
         """
         Check if an operation is registered.
         
         Args:
-            name: The operation name to check
+            operation_name: The operation name to check
             
         Returns:
             True if the operation exists, False otherwise
         """
-        return name in self._operations
+        return operation_name in self._operations
     
     def list_registered_operations(self) -> List[OperationDefinition]:
         """
@@ -507,26 +507,6 @@ def register_operation(
 ) -> Callable:
     """
     Decorator for registering a processing operation.
-    
-    Usage:
-        @register_operation(
-            operation_name="video_compress",
-            media_type=MediaType.VIDEO,
-            parameters=[
-                ParameterSchema(
-                    name="quality",
-                    param_type=ParameterType.INTEGER,
-                    default=23,
-                    min_value=18,
-                    max_value=28,
-                    description="CRF quality value (lower is better)"
-                )
-            ],
-            description="Compress a video file using H.264 codec"
-        )
-        def video_compress(job, input_path, output_path, parameters):
-            # Processing logic here
-            pass
     
     Args:
         operation_name: Unique identifier for the operation
