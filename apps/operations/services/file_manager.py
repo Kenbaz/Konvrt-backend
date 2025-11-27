@@ -146,7 +146,7 @@ class FileManager:
         mime_type = FileManager.detect_mime_type(uploaded_file, extension)
         media_type = FileManager.get_media_type_from_mime_type(mime_type)
 
-        if media_type is not None:
+        if media_type is None:
             raise UnsupportedFileFormatError(
                 filename=original_filename,
                 extension=extension,
