@@ -3,7 +3,7 @@
 class ProcessorException(Exception):
     """Base exception for all processor-related errors."""
 
-    def __inti__(self, message: str, code: str = None, details: dict = None):
+    def __init__(self, message: str, code: str = None, details: dict = None):
         self.message = message
         self.code = code or "PROCESSOR_ERROR"
         self.details = details or {}
