@@ -3,6 +3,7 @@ from django.db import models
 import uuid
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.conf import settings
 from datetime import timedelta
 from .enums import OperationStatus, FileType
 
@@ -124,5 +125,4 @@ class File(models.Model):
     @property
     def file_url(self):
         """Generate the url path for accessing files"""
-        from django.conf import settings
         return f"{settings.MEDIA_URL}{self.file_path}"
