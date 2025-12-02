@@ -287,7 +287,7 @@ class OperationRegistry:
         
         # Create a set of parameter names for quick lookup
         provided_params = set(parameters.keys()) if parameters else set()
-        defined_params = {p.name: p for p in operation.parameters}
+        defined_params = {p.param_name: p for p in operation.parameters}
         
         # Check for unknown parameters
         unknown_params = provided_params - set(defined_params.keys())
@@ -296,7 +296,7 @@ class OperationRegistry:
         
         # Validate each defined parameter
         for param_schema in operation.parameters:
-            param_name = param_schema.name
+            param_name = param_schema.param_name
             
             # Check if parameter is provided
             if param_name in parameters:
@@ -521,7 +521,7 @@ def register_operation(
     """
     def decorator(func: Callable) -> Callable:
         registry.register_operation(
-            name=operation_name,
+            operation_name=operation_name,
             media_type=media_type,
             handler=func,
             parameters=parameters,
