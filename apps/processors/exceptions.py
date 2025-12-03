@@ -279,7 +279,7 @@ class MediaDurationError(ProcessorException):
 
 class ImageProcessingError(ProcessorException):
     """Raised when image processing with Pillow fails."""
-    
+
     def __init__(self, filename: str, reason: str, operation: str = None):
         self.filename = filename
         self.reason = reason
@@ -363,7 +363,7 @@ class ResourceLimitError(ProcessorException):
 
 class ProcessingTimeoutError(ProcessorException):
     """Raised when processing times out."""
-    
+
     def __init__(self, operation_name: str, timeout_seconds: int):
         self.operation_name = operation_name
         self.timeout_seconds = timeout_seconds
@@ -391,5 +391,29 @@ class ProcessingCancelledError(ProcessorException):
             details={
                 "operation_id": operation_id,
                 "reason": reason,
+            }
+        )
+
+
+class AudioProcessingError(ProcessorException):
+    """Raised when audio processing fails."""
+
+    def __init__(self, filename: str, reason: str, operation: str = None):
+        self.filename = filename
+        self.reason = reason
+        self.operation = operation
+        
+        if operation:
+            message = f"Audio {operation} failed for '{filename}': {reason}"
+        else:
+            message = f"Audio processing failed for '{filename}': {reason}"
+        
+        super().__init__(
+            message=message,
+            code="AUDIO_PROCESSING_ERROR",
+            details={
+                "filename": filename,
+                "reason": reason,
+                "operation": operation,
             }
         )
