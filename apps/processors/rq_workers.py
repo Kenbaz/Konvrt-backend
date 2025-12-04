@@ -1,4 +1,4 @@
-# apps/processors/workers.py
+# apps/processors/rq_workers.py
 
 """
 RQ Worker functions for processing media operations.
@@ -11,6 +11,7 @@ to process media operations. It handles:
 - Updating operation status
 - Error handling and classification
 - Cleanup of temporary files
+- Real-time progress tracking with throttling
 """
 import logging
 import os
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 # Retry configuration
 MAX_RETRIES = 2
 RETRY_DELAYS = [60, 300]  # Seconds: 1 minute, 5 minutes (exponential backoff)
+
+# Progress update configuration
+PROGRESS_UPDATE_INTERVAL = 5.0  # Minimum seconds between progress updates
+MIN_PERCENT_CHANGE = 5  # Minimum percent change to trigger update
 
 
 class WorkerError(Exception):
@@ -67,6 +72,54 @@ class ProcessingFailedError(WorkerError):
         )
 
 
+def create_worker_progress_callback(operation_id: str):
+    """
+    Create a progress callback function for worker use.
+    
+    This creates a callback that updates the operation's progress in the database
+    with throttling to prevent excessive database writes.
+    
+    Args:
+        operation_id: UUID string of the operation
+        
+    Returns:
+        Callable that accepts (percent: int, eta_seconds: Optional[float])
+    """
+    from .utils.track_progress import ThrottledProgressCallback
+    
+    def update_progress_in_db(percent: int, eta_seconds: Optional[float] = None) -> None:
+        """Update operation progress directly in database."""
+        from apps.operations.models import Operation
+        
+        try:
+            # Cap progress at 99% until completion (100% is set by complete_operation)
+            clamped_percent = max(0, min(99, percent))
+            
+            # Use update() for efficiency - avoids loading the full model
+            Operation.objects.filter(id=operation_id).update(progress=clamped_percent)
+            
+            logger.debug(
+                f"Updated operation {operation_id} progress to {clamped_percent}%"
+                + (f" (ETA: {eta_seconds:.1f}s)" if eta_seconds else "")
+            )
+        except Exception as e:
+            # Log but don't fail - progress updates are non-critical
+            logger.warning(f"Failed to update progress for operation {operation_id}: {e}")
+    
+    # Create throttled callback
+    throttled_callback = ThrottledProgressCallback(
+        callback=update_progress_in_db,
+        min_interval=PROGRESS_UPDATE_INTERVAL,
+        min_percent_change=MIN_PERCENT_CHANGE,
+    )
+    
+    # Return a simple callable that uses the throttled callback
+    def progress_callback(percent: int, eta_seconds: Optional[float] = None) -> None:
+        throttled_callback.update(percent, eta_seconds)
+    
+    return progress_callback
+
+
 def process_operation(operation_id: str) -> Dict[str, Any]:
     """
     Main entry point for processing an operation.
@@ -76,7 +129,7 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
     1. Fetch operation from database
     2. Update status to PROCESSING
     3. Get the appropriate processor from registry
-    4. Execute the processor
+    4. Execute the processor with progress tracking
     5. Move output to permanent storage
     6. Update operation status to COMPLETED or FAILED
     7. Cleanup temporary files
@@ -153,15 +206,8 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
         operation_def = registry.get_operation(operation.operation)
         handler = operation_def.handler
 
-        # Create progress callback
-        def progress_callback(percent: int, eta_seconds: Optional[float] = None) -> None:
-            """Update operation progress in database"""
-            try:
-                operation.objects.filter(id=operation_id).update(
-                    progress=min(99, max(0, percent)) # Cap at 99% until completion
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update progress: {e}")
+        # Create progress callback with throttling
+        progress_callback = create_worker_progress_callback(operation_id)
         
         # Execute the processor
         logger.info(f"Executing handler for operation {operation.operation}")
@@ -280,7 +326,7 @@ def complete_operation(
     """
     from apps.operations.enums import OperationStatus
 
-    # Valculate expiration (7 days from completion)
+    # Calculate expiration (7 days from completion)
     expiration_days = getattr(settings, 'OPERATION_EXPIRATION_DAYS', 7)
 
     operation.status = OperationStatus.COMPLETED
