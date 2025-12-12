@@ -242,10 +242,6 @@ class BaseProcessor(ABC):
         
         finally:
             self.end_time = datetime.now()
-
-            # Cleanup temp directory
-            if self.temp_dir:
-                self.cleanup_temp_directory()
             
             # Log completion
             processing_time = self._get_processing_time()
