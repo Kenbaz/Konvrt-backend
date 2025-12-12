@@ -450,24 +450,22 @@ class OperationDefinitionViewSet(viewsets.ViewSet):
         Returns:
             List of available operations with their schemas
         """
-        from apps.processors.registry import get_registry
+        from apps.processors.registry import get_registry, MediaType
         
         registry = get_registry()
-        operations = registry.list_operations()
         
         # Apply media_type filter if provided
         media_type_filter = request.query_params.get('media_type')
         if media_type_filter:
-            operations = [
-                op for op in operations
-                if op.get('media_type') == media_type_filter
-            ]
-        
-        # Convert to list of operation definitions
-        operation_defs = []
-        for op_dict in operations:
-            operation_def = registry.get_operation(op_dict['operation_name'])
-            operation_defs.append(operation_def)
+            # Convert string to MediaType enum
+            try:
+                media_type_enum = MediaType(media_type_filter)
+                operation_defs = registry.list_operations_by_media_type(media_type_enum)
+            except ValueError:
+                # Invalid media type, return empty list
+                operation_defs = []
+        else:
+            operation_defs = registry.list_registered_operations()
         
         serializer = OperationDefinitionListSerializer(
             operation_defs,
