@@ -209,9 +209,9 @@ class OperationsManager:
             # Enqueue the operation for processing
             # The worker will call process_operation with the operation ID
             rq_job = queue.enqueue(
-                "apps.processors.workers.process_operation",
+                "apps.processors.rq_workers.process_operation",
                 str(operation_id),
-                operation_timeout=timeout
+                job_timeout=timeout
             )
 
             # Update operation status to QUEUED
