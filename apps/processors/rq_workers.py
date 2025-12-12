@@ -15,6 +15,7 @@ to process media operations. It handles:
 """
 import logging
 import os
+import shutil
 import traceback
 from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple
@@ -114,8 +115,9 @@ def create_worker_progress_callback(operation_id: str):
     )
     
     # Return a simple callable that uses the throttled callback
+    # ThrottledProgressCallback implements __call__, so its being called directly
     def progress_callback(percent: int, eta_seconds: Optional[float] = None) -> None:
-        throttled_callback.update(percent, eta_seconds)
+        throttled_callback(percent, eta_seconds)
     
     return progress_callback
 
@@ -161,7 +163,7 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
     try:
         # Fetch operation from database
         try:
-            operation = Operation.objects.select_for_update().get(
+            operation = Operation.objects.get(
                 id=operation_id,
                 is_deleted=False,
             )
@@ -256,6 +258,15 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
                     f"(output={output_info['file_name']}, "
                     f"size={output_info['file_size']} bytes)"
                 )
+
+                # Clean up temp directory after successful move
+                temp_dir = os.path.dirname(temp_output_path)
+                if temp_dir and os.path.exists(temp_dir) and 'temp' in temp_dir:
+                    try:
+                        shutil.rmtree(temp_dir)
+                        logger.debug(f"Cleaned up temp directory: {temp_dir}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp directory: {cleanup_error}")
 
                 return {
                     "success": True,
