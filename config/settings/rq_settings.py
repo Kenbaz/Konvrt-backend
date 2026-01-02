@@ -13,11 +13,11 @@ This module provides configuration for django-rq including:
 import os
 
 # Redis connection settings
-REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', None)
-REDIS_URL = os.environ.get('REDIS_URL', None)
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = os.getenv('REDIS_PORT', 6379)
+REDIS_DB = os.getenv('REDIS_DB', 0)
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+REDIS_URL = os.getenv('REDIS_URL', None)
 
 # Build Redis connection config
 if REDIS_URL:
