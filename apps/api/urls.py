@@ -43,6 +43,7 @@ router = DefaultRouter()
 
 router.register(r'operations', OperationViewSet, basename='operation')
 router.register(r'operation-definitions', OperationDefinitionViewSet, basename='operation-definition')
+router.register(r'operation-types', OperationDefinitionViewSet, basename='operation-types')
 
 
 # URL patterns for API v1

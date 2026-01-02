@@ -303,10 +303,8 @@ class FFmpegWrapper:
         Returns:
             FFmpegResult
         """
-        # Add progress flag for FFmpeg to output progress info
         if '-progress' not in cmd:
-            # Insert progress args before output file
-            progress_args = ['-progress', 'pipe:2', '-nostats']
+            progress_args = ['-progress', 'pipe:1', '-nostats']
             # Find position before output 
             cmd = cmd[:-1] + progress_args + [cmd[-1]]
         
@@ -1000,9 +998,3 @@ def get_ffmpeg_wrapper() -> FFmpegWrapper:
     if _ffmpeg_wrapper is None:
         _ffmpeg_wrapper = FFmpegWrapper()
     return _ffmpeg_wrapper
-
-
-
-
-
-

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from django.http import HttpRequest
 from rest_framework import status
+from urllib.parse import quote
 from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
@@ -247,31 +248,85 @@ def sanitize_filename_for_response(filename: str) -> str:
 
 def build_download_headers(
     filename: str,
-    file_size: int,
-    content_type: str,
+    file_size: Optional[int] = None,
+    content_type: Optional[str] = None,
     inline: bool = False,
 ) -> Dict[str, str]:
     """
-    Build HTTP headers for file download response.
+    Build HTTP headers for file download responses.
+    
+    Creates proper Content-Disposition header with both ASCII and UTF-8
+    encoded filename for maximum browser compatibility.
     
     Args:
-        filename: The filename to suggest to the browser
-        file_size: File size in bytes
-        content_type: MIME type of the file
-        inline: If True, suggest inline display; if False, suggest download
+        filename: The filename to suggest for download
+        file_size: Optional file size in bytes
+        content_type: Optional MIME type
+        inline: If True, suggest inline display instead of download
         
     Returns:
         Dictionary of HTTP headers
     """
-    safe_filename = sanitize_filename_for_response(filename)
-    disposition = "inline" if inline else "attachment"
+    headers = {}
     
-    return {
-        "Content-Type": content_type,
-        "Content-Length": str(file_size),
-        "Content-Disposition": f'{disposition}; filename="{safe_filename}"',
-        "X-Content-Type-Options": "nosniff",
-    }
+    # Sanitize filename for header
+    safe_filename = sanitize_filename_for_header(filename)
+    
+    # Build Content-Disposition header
+    disposition_type = "inline" if inline else "attachment"
+    
+    ascii_filename = safe_filename.encode('ascii', 'replace').decode('ascii')
+    utf8_filename = quote(filename, safe='')
+    
+    content_disposition = f'{disposition_type}; filename="{ascii_filename}"; filename*=UTF-8\'\'{utf8_filename}'
+    headers['Content-Disposition'] = content_disposition
+    
+    if file_size is not None:
+        headers['Content-Length'] = str(file_size)
+    
+    if content_type:
+        headers['Content-Type'] = content_type
+    
+    headers['Cache-Control'] = 'private, no-cache, no-store, must-revalidate'
+    headers['Pragma'] = 'no-cache'
+    headers['Expires'] = '0'
+    
+    headers['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length, Content-Type'
+    
+    return headers
+
+
+def sanitize_filename_for_header(filename: str) -> str:
+    """
+    Sanitize a filename for use in HTTP headers.
+    
+    Removes or replaces characters that could cause issues in
+    Content-Disposition headers.
+    
+    Args:
+        filename: The original filename
+        
+    Returns:
+        Sanitized filename
+    """
+    if not filename:
+        return "download"
+    
+    sanitized = filename
+    
+    # Replace backslashes and forward slashes
+    sanitized = sanitized.replace('\\', '_').replace('/', '_')
+    
+    # Replace quotes
+    sanitized = sanitized.replace('"', "'").replace('\n', '').replace('\r', '')
+    
+    # Remove control characters
+    sanitized = ''.join(char for char in sanitized if ord(char) >= 32)
+    
+    if not sanitized or sanitized.strip() == '':
+        return "download"
+    
+    return sanitized.strip()
 
 
 def parse_boolean_param(value: Any, default: bool = False) -> bool:

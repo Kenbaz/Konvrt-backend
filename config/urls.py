@@ -32,26 +32,19 @@ urlpatterns = [
     path('api/v1/', include('apps.api.urls', namespace='api')),
 ]
 
-if settings.DEBUG:
-    # Debug Toolbar
-    # Provides debugging information panel in the browser
+if settings.DEBUG:# Provides debugging information panel in the browser
     urlpatterns += [
         path('__debug__/', include('debug_toolbar.urls')),
     ]
 
     # Django RQ Dashboard
-    # Provides a web interface for monitoring Redis Queue jobs
-    # Access at: /django-rq/
-    # SECURITY: Only enabled in DEBUG mode to prevent unauthorized access
     urlpatterns += [
         path('django-rq/', include('django_rq.urls')),
     ]
 
     # Serve media files during development
-    # In production, use nginx, Apache, or a CDN to serve media files
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
-    # Serve static files during development (if not using whitenoise)
     urlpatterns += static(
         settings.STATIC_URL,
         document_root=settings.STATIC_ROOT

@@ -831,12 +831,40 @@ class OperationsManager:
         operation = OperationsManager.get_operation(operation_id,
         session_key)
 
-        if operation.status not in [OperationStatus.PENDING, OperationStatus.QUEUED]:
+        cancellable_statuses = [
+            OperationStatus.PENDING,
+            OperationStatus.QUEUED,
+            OperationStatus.PROCESSING,
+        ]
+
+        if operation.status not in cancellable_statuses:
             raise InvalidOperationStateError(
                 operation_id=str(operation_id),
                 current_status=operation.status,
-                expected_statuses=[OperationStatus.PENDING, OperationStatus.QUEUED],
+                expected_statuses=cancellable_statuses,
             )
+        
+        # Try to cancel the RQ job if it's in the queue or processing
+        if operation.status in [OperationStatus.QUEUED, OperationStatus.PROCESSING]:
+            try:
+                import django_rq
+                
+                # Get the appropriate queue
+                queue_name = OperationsManager.get_queue_for_operation(operation.operation)
+                queue = django_rq.get_queue(queue_name)
+                
+                # Try to find and cancel the RQ job
+                for rq_job in queue.jobs:
+                    if str(operation_id) in str(rq_job.args):
+                        try:
+                            rq_job.cancel()
+                            logger.info(f"Cancelled RQ job for operation {operation_id}")
+                        except Exception as e:
+                            logger.warning(f"Could not cancel RQ job for operation {operation_id}: {e}")
+                        break
+            except Exception as e:
+                logger.warning(f"Error attempting to cancel RQ job for operation {operation_id}: {e}")
+
         
         # Mark as failed with cancellation message
         operation.status = OperationStatus.FAILED

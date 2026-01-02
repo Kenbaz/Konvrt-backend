@@ -467,7 +467,7 @@ class OperationDefinitionViewSet(viewsets.ViewSet):
         else:
             operation_defs = registry.list_registered_operations()
         
-        serializer = OperationDefinitionListSerializer(
+        serializer = OperationDefinitionSerializer(
             operation_defs,
             many=True,
             context={'request': request}
