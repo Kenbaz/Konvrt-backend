@@ -41,10 +41,11 @@ LOGGING['root']['level'] = 'INFO'
 LOGGING['loggers']['apps.operations']['level'] = 'INFO'
 LOGGING['loggers']['apps.processors']['level'] = 'INFO'
 
-# Email backend for production
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')
-# EMAIL_PORT = env('EMAIL_PORT', default=587)
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
-# EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+STORAGE_ROOT = Path(env('STORAGE_ROOT', default=str(BASE_DIR / 'storage')))
+MEDIA_ROOT = STORAGE_ROOT
+UPLOAD_DIR = STORAGE_ROOT / 'uploads'
+OUTPUT_DIR = STORAGE_ROOT / 'outputs'
+TEMP_DIR = STORAGE_ROOT / 'temp'
+
+for directory in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)

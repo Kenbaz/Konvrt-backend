@@ -8,6 +8,7 @@ djangorestframework==3.14.0
 
 # Environment variables
 django-environ==0.12.0
+dj-database-url>=2.1.0
 
 # Database
 psycopg2-binary==2.9.9
