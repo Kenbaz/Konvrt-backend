@@ -1,62 +1,38 @@
-asgiref==3.11.0
-asttokens==3.0.1
-black==23.11.0
-click==8.3.1
-colorama==0.4.6
-coverage==7.12.0
-croniter==6.0.0
-decorator==5.2.1
-Django==4.2.7
-django-cors-headers==4.9.0
-django-debug-toolbar==4.2.0
-django-environ==0.12.0
-django-filter==23.5
-django-rq==2.10.1
-djangorestframework==3.14.0
-executing==2.2.1
-flake8==6.1.0
-iniconfig==2.3.0
-ipython==8.18.1
-isort==5.12.0
-jedi==0.19.2
-matplotlib-inline==0.2.1
-mccabe==0.7.0
-mypy_extensions==1.1.0
-packaging==25.0
-parso==0.8.5
-pathspec==0.12.1
-Pillow==10.1.0
-platformdirs==4.5.0
-pluggy==1.6.0
-prompt_toolkit==3.0.52
-psycopg2-binary==2.9.9
-pure_eval==0.2.3
-pycodestyle==2.11.1
-pyflakes==3.1.0
-Pygments==2.19.2
-pytest==7.4.3
-pytest-cov==4.1.0
-pytest-django==4.7.0
-pytest-mock==3.15.1
-python-dateutil==2.8.2
-python-magic-bin==0.4.14
-pytz==2025.2
-redis==5.0.1
-rq==2.6.1
-six==1.17.0
-sqlparse==0.5.3
-stack-data==0.6.3
-traitlets==5.14.3
-tzdata==2025.2
-wcwidth==0.2.14
 
-# WSGI server
-gunicorn==21.2.0
+# Core Django
+Django>=4.2.7,<5.0
 
-# Static file serving
-whitenoise==6.6.0
+# Django REST Framework
+djangorestframework>=3.14.0,<4.0
 
 # Environment variables
+django-environ>=0.12.0
+
+# Database
+psycopg2-binary>=2.9.9
 dj-database-url>=2.1.0
 
-environ==1.0
+# Redis and Queue
+redis>=5.0.1
+django-rq>=2.10.1
+
+# Image processing
+Pillow>=10.4.0
+
+# File type detection
+python-magic>=0.4.27
+
+# Filtering
+django-filter>=23.5
+
+# CORS
+django-cors-headers>=4.3.1
+
+# Utilities
+python-dateutil>=2.8.2
+
+# WSGI server
+gunicorn>=21.2.0
+
+# Static file serving
+whitenoise>=6.6.0
