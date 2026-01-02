@@ -6,21 +6,24 @@ These settings are shared across all environments.
 import os
 from pathlib import Path
 import environ
+import secrets
+import dj_database_url
 
 # Initialize environment variables
 env = environ.Env(
     DEBUG=(bool, False)
 )
 
-# Build paths inside the project
-# BASE_DIR is three levels up from this file
+ENVIRONMENT = os.getenv('DJANGO_ENVIRONMENT', 'development')
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Read .env file
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = env('SECRET_KEY', default='django-insecure-j20zyakxx*kh_!68m-6$v_cb-i99mof5dp@fq^diq=9x9g!$qe')
+
+SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
 
 # Application definition
 INSTALLED_APPS = [
@@ -79,16 +82,31 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # This will be overridden in development.py and production.py
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': env('DB_NAME', default='mediaprocessor'),
-        'USER': env('DB_USER', default='postgres'),
-        'PASSWORD': env('DB_PASSWORD', default=''),
-        'HOST': env('DB_HOST', default='localhost'),
-        'PORT': env('DB_PORT', default='5432'),
+if ENVIRONMENT == 'production':
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=os.getenv('DB_PRODUCTION_URL'),
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+
+    # Ensure SSL is required for PostgreSQL in production
+    if DATABASES['default']:
+        DATABASES['default']['OPTIONS'] = {
+            'sslmode': 'require',
+        }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME'),
+            'USER': os.getenv('DB_USER'),
+            'PASSWORD': os.getenv('DB_PASSWORD'),
+            'HOST': os.getenv('DB_HOST'),
+            'PORT': os.getenv('DB_PORT'),
+        }
+    }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
