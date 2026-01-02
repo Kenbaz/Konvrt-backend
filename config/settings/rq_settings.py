@@ -8,10 +8,6 @@ This module provides configuration for django-rq including:
 - Timeout settings per media type
 - Retry configuration
 - Connection settings
-
-Add these settings to your base.py or development.py/production.py:
-
-    from .rq_settings import RQ_QUEUES, RQ_SHOW_ADMIN_LINK
 """
 
 import os
