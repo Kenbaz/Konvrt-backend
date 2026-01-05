@@ -25,6 +25,7 @@ import cloudinary.api
 from cloudinary.utils import cloudinary_url
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
+from ..exceptions import StorageError
 
 
 class CloudinaryStorageError(Exception):
@@ -47,9 +48,54 @@ class CloudinaryStorageError(Exception):
             }
         }
 
-StorageError = CloudinaryStorageError
+CloudinaryStorageError = StorageError
 
 logger = logging.getLogger(__name__)
+
+def _get_user_friendly_error_message(error: Exception) -> str:
+    """
+    Convert technical error messages to user-friendly messages
+    """
+    error_str = str(error).lower()
+    
+    error_mappings = [
+        # File size errors
+        ('file size too large', 'File is too large. Please upload a smaller file.'),
+        ('maximum is', 'File exceeds the maximum allowed size. Please upload a smaller file.'),
+        
+        # Network/Connection errors
+        ('ssl', 'Connection error occurred. Please check your internet and try again.'),
+        ('timeout', 'Upload timed out. Please try again.'),
+        ('connection', 'Connection failed. Please check your internet and try again.'),
+        ('network', 'Network error occurred. Please try again.'),
+        ('eof occurred', 'Connection was interrupted. Please try again.'),
+        ('broken pipe', 'Connection was lost. Please try again.'),
+        ('max retries exceeded', 'Upload failed after multiple attempts. Please try again later.'),
+        
+        # Authentication/Permission errors
+        ('invalid api', 'Storage service configuration error. Please contact support.'),
+        ('unauthorized', 'Storage service authentication failed. Please contact support.'),
+        ('forbidden', 'Access denied to storage service. Please contact support.'),
+        
+        # Resource errors
+        ('not found', 'File not found. It may have been deleted.'),
+        ('does not exist', 'The requested file does not exist.'),
+        
+        # Rate limiting
+        ('rate limit', 'Too many requests. Please wait a moment and try again.'),
+        ('too many', 'Too many requests. Please wait a moment and try again.'),
+        
+        # Storage errors
+        ('quota', 'Storage quota exceeded. Please contact support.'),
+        ('disk', 'Storage error occurred. Please try again later.'),
+    ]
+    
+    for pattern, friendly_message in error_mappings:
+        if pattern in error_str:
+            return friendly_message
+    
+    # Default message for unknown errors
+    return 'An error occurred while processing your file. Please try again.'
 
 @dataclass
 class CloudinaryUploadResult:
@@ -133,6 +179,22 @@ class CloudinaryStorageService:
                 reason="Cloudinary storage is disabled in settings."
             )
         
+        file_size = CloudinaryStorageService._get_file_size(file_source)
+        max_file_size = CloudinaryStorageService._get_max_file_size()
+        
+        if file_size > max_file_size:
+            max_mb = max_file_size / (1024 * 1024)
+            file_mb = file_size / (1024 * 1024)
+            raise StorageError(
+                operation="upload",
+                path=filename,
+                reason=(
+                    f"File is too large ({file_mb:.1f} MB). "
+                    f"Maximum allowed size is {max_mb:.0f} MB. "
+                    f"Please upload a smaller file"
+                )
+            )
+        
         public_id = CloudinaryStorageService._build_public_id(
             folder_type=folder_type,
             session_key=session_key,
@@ -142,8 +204,6 @@ class CloudinaryStorageService:
 
         resource_type = CloudinaryStorageService._get_resource_type(media_type)
 
-        # Determine file size to decide upload strategy
-        file_size = CloudinaryStorageService._get_file_size(file_source)
         use_chunked = file_size > CloudinaryStorageService.LARGE_FILE_THRESHOLD
 
         if use_chunked:
@@ -253,12 +313,12 @@ class CloudinaryStorageService:
                 ])
                 
                 if not is_retryable:
-                    # Non-retryable error, fail immediately
                     logger.error(f"Non-retryable Cloudinary upload error for {public_id}: {e}")
+                    user_message = _get_user_friendly_error_message(e)
                     raise StorageError(
                         operation="upload",
                         path=filename,
-                        reason=f"Cloudinary upload failed: {error_str}"
+                        reason=user_message
                     )
                 
                 if attempt < CloudinaryStorageService.MAX_RETRIES - 1:
@@ -275,11 +335,12 @@ class CloudinaryStorageService:
                         f"attempts for {public_id}: {e}"
                     )
 
-        # All retries exhausted
+        # All retries exhausted - use user-friendly message
+        user_message = _get_user_friendly_error_message(last_error)
         raise StorageError(
             operation="upload",
             path=filename,
-            reason=f"Cloudinary upload failed after {CloudinaryStorageService.MAX_RETRIES} attempts: {str(last_error)}"
+            reason=user_message
         )
 
     @staticmethod
@@ -368,10 +429,11 @@ class CloudinaryStorageService:
                 
                 if not is_retryable:
                     logger.error(f"Non-retryable Cloudinary chunked upload error for {public_id}: {e}")
+                    user_message = _get_user_friendly_error_message(e)
                     raise StorageError(
                         operation="upload",
                         path=filename,
-                        reason=f"Cloudinary upload failed: {error_str}"
+                        reason=user_message
                     )
                 
                 if attempt < CloudinaryStorageService.MAX_RETRIES - 1:
@@ -387,10 +449,11 @@ class CloudinaryStorageService:
                         f"attempts for {public_id}: {e}"
                     )
 
+        user_message = _get_user_friendly_error_message(last_error)
         raise StorageError(
             operation="upload",
             path=filename,
-            reason=f"Cloudinary chunked upload failed after {CloudinaryStorageService.MAX_RETRIES} attempts: {str(last_error)}"
+            reason=user_message
         )
 
     @staticmethod
