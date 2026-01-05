@@ -6,9 +6,9 @@ API views for the media processing platform.
 This module provides ViewSets and views for:
 - Managing operations (create, list, retrieve, delete)
 - Checking operation status
-- Downloading processed files
+- Downloading processed files (local or Cloudinary redirect)
 - Listing available operations
-- Health checks
+- Health checks (including Cloudinary connectivity)
 """
 
 import logging
@@ -18,7 +18,7 @@ from typing import Any, Dict
 
 from django.conf import settings
 from django.db import connection
-from django.http import FileResponse, Http404
+from django.http import FileResponse, HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -53,6 +53,11 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _use_cloudinary() -> bool:
+    """Check if Cloudinary storage is enabled."""
+    return getattr(settings, 'USE_CLOUDINARY', False)
 
 
 class OperationViewSet(viewsets.ViewSet):
@@ -259,6 +264,9 @@ class OperationViewSet(viewsets.ViewSet):
         """
         Download the output file for a completed operation.
         
+        For Cloudinary storage: Returns a redirect to the Cloudinary URL
+        For local storage: Returns the file directly
+        
         Path Parameters:
             - pk: Operation ID (UUID)
         
@@ -266,7 +274,8 @@ class OperationViewSet(viewsets.ViewSet):
             - inline: If 'true', suggest inline display instead of download
         
         Returns:
-            File response with appropriate headers
+            - Redirect to Cloudinary URL (if using Cloudinary)
+            - File response with appropriate headers (if using local storage)
         """
         operation = self._get_operation(request, pk)
         
@@ -287,6 +296,77 @@ class OperationViewSet(viewsets.ViewSet):
                 status_code=status.HTTP_404_NOT_FOUND,
             )
         
+        # Determine if inline display is requested
+        inline = request.query_params.get('inline', '').lower() == 'true'
+        
+        # Check if file is stored in Cloudinary
+        if output_file.cloudinary_public_id:
+            return self._handle_cloudinary_download(output_file, inline)
+        else:
+            return self._handle_local_download(output_file, inline, pk)
+    
+    def _handle_cloudinary_download(self, output_file, inline: bool) -> Response:
+        """
+        Handle download for Cloudinary-stored files.
+        
+        Returns a JSON response with the download URL instead of redirecting,
+        to avoid CORS issues when the frontend uses credentials.
+        
+        Args:
+            output_file: File model instance
+            inline: Whether to display inline or force download
+            
+        Returns:
+            JSON response with download_url for frontend to handle
+        """
+        from apps.operations.services.cloudinary_storage import CloudinaryStorageService
+        
+        # Generate download URL from Cloudinary
+        download_url = CloudinaryStorageService.get_download_url(
+            public_id=output_file.cloudinary_public_id,
+            resource_type=output_file.cloudinary_resource_type or 'auto',
+            attachment=not inline,  # Force download unless inline requested
+        )
+        
+        if not download_url:
+            # Fallback to stored URL if generation fails
+            download_url = output_file.cloudinary_url
+        
+        if not download_url:
+            return error_response(
+                message="Could not generate download URL",
+                code="URL_GENERATION_FAILED",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        
+        logger.info(
+            f"Generated Cloudinary download URL: {output_file.file_name} "
+            f"(public_id={output_file.cloudinary_public_id})"
+        )
+        
+        return success_response(
+            data={
+                "download_url": download_url,
+                "file_name": output_file.file_name,
+                "file_size": output_file.file_size,
+                "mime_type": output_file.mime_type,
+                "storage_location": "cloudinary",
+            },
+            message="Download URL generated successfully",
+        )
+    
+    def _handle_local_download(self, output_file, inline: bool, operation_id: str) -> Response:
+        """
+        Handle download for locally-stored files.
+        
+        Args:
+            output_file: File model instance
+            inline: Whether to display inline or force download
+            operation_id: Operation ID for logging
+            
+        Returns:
+            FileResponse with the file content
+        """
         # Build full file path
         file_path = os.path.join(settings.MEDIA_ROOT, output_file.file_path)
         
@@ -297,9 +377,6 @@ class OperationViewSet(viewsets.ViewSet):
                 code="FILE_NOT_FOUND",
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        
-        # Determine if inline display is requested
-        inline = request.query_params.get('inline', '').lower() == 'true'
         
         # Build response headers
         headers = build_download_headers(
@@ -318,7 +395,7 @@ class OperationViewSet(viewsets.ViewSet):
         for key, value in headers.items():
             response[key] = value
         
-        logger.info(f"Serving download for operation {pk}: {output_file.file_name}")
+        logger.info(f"Serving local download for operation {operation_id}: {output_file.file_name}")
         
         return response
     
@@ -360,7 +437,7 @@ class OperationViewSet(viewsets.ViewSet):
     @action(detail=True, methods=['post'])
     def cancel(self, request: Request, pk: str = None) -> Response:
         """
-        Cancel a pending or queued operation.
+        Cancel a queued or processing operation.
         
         Path Parameters:
             - pk: Operation ID (UUID)
@@ -390,10 +467,9 @@ class OperationViewSet(viewsets.ViewSet):
             message="Operation cancelled",
         )
     
-
     def _get_operation(self, request: Request, pk: str):
         """
-        Get an operation by ID with ownership verification.
+        Get an operation by ID with ownership check.
         
         Args:
             request: The request object
@@ -521,7 +597,7 @@ class HealthCheckView(APIView):
     - Database connectivity
     - Redis connectivity
     - Queue status
-    - Storage availability
+    - Storage availability (local and/or Cloudinary)
     """
     
     # No authentication or throttling for health checks
@@ -545,6 +621,7 @@ class HealthCheckView(APIView):
             "status": "healthy",
             "timestamp": timezone.now().isoformat(),
             "version": getattr(settings, 'API_VERSION', 'v1'),
+            "storage_backend": "cloudinary" if _use_cloudinary() else "local",
         }
         
         # Check components
@@ -563,11 +640,18 @@ class HealthCheckView(APIView):
         if redis_status["status"] != "healthy":
             all_healthy = False
         
-        # Storage check
+        # Storage check (includes Cloudinary if enabled)
         storage_status = self._check_storage()
         components["storage"] = storage_status
-        if storage_status["status"] != "healthy":
+        if storage_status["status"] not in ["healthy", "warning"]:
             all_healthy = False
+        
+        # Cloudinary check (if enabled)
+        if _use_cloudinary():
+            cloudinary_status = self._check_cloudinary()
+            components["cloudinary"] = cloudinary_status
+            if cloudinary_status["status"] != "healthy":
+                all_healthy = False
         
         # Queue stats (if detailed)
         if detailed:
@@ -613,7 +697,7 @@ class HealthCheckView(APIView):
     
 
     def _check_storage(self) -> Dict[str, Any]:
-        """Check storage availability."""
+        """Check local storage availability."""
         try:
             # Check that storage directories exist and are writable
             for dir_name in ['uploads', 'outputs', 'temp']:
@@ -646,11 +730,27 @@ class HealthCheckView(APIView):
             
             return {
                 "status": "healthy",
-                "message": "Storage OK",
+                "message": "Local storage OK",
                 "free_space_gb": round(free_gb, 2),
             }
         except Exception as e:
             logger.error(f"Storage health check failed: {e}")
+            return {"status": "unhealthy", "message": str(e)}
+    
+    
+    def _check_cloudinary(self) -> Dict[str, Any]:
+        """Check Cloudinary connectivity."""
+        try:
+            from apps.operations.services.cloudinary_storage import CloudinaryStorageService
+            
+            is_healthy, message = CloudinaryStorageService.check_connection()
+            
+            return {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "message": message,
+            }
+        except Exception as e:
+            logger.error(f"Cloudinary health check failed: {e}")
             return {"status": "unhealthy", "message": str(e)}
     
     
@@ -699,6 +799,7 @@ class QueueStatsView(APIView):
                 data=queue_data,
                 metadata={
                     "timestamp": timezone.now().isoformat(),
+                    "storage_backend": "cloudinary" if _use_cloudinary() else "local",
                 }
             )
         except Exception as e:
@@ -747,5 +848,6 @@ class SessionInfoView(APIView):
                     "total": total_operations,
                     "by_status": operation_counts,
                 },
+                "storage_backend": "cloudinary" if _use_cloudinary() else "local",
             }
         )

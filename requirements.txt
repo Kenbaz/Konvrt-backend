@@ -36,3 +36,7 @@ gunicorn>=21.2.0
 
 # Static file serving
 whitenoise>=6.6.0
+
+# Cloudinary for media storage
+cloudinary>=1.44.1
+django-cloudinary-storage>=0.3.0

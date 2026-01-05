@@ -4,7 +4,7 @@
 Operation Manager Service for handling operation lifecycle.
 
 This module provides centralized job management including:
-- Creating new jobs with file uploads
+- Creating new jobs with file uploads (to Cloudinary or local storage)
 - Queuing jobs for processing
 - Updating job status and progress
 - Retrieving job information
@@ -79,7 +79,7 @@ class OperationsManager:
         1. Validates the operation exists in the registry
         2. Validates the parameters against the operation schema
         3. Creates the operation record
-        4. Saves the uploaded file
+        4. Saves the uploaded file (to Cloudinary or local storage)
         5. Creates the file record associated with the operation
         
         Args:
@@ -129,30 +129,36 @@ class OperationsManager:
         )
 
         try:
-            # Save the uploaded file
+            # Save the uploaded file (to Cloudinary or local storage)
             file_info = FileManager.save_uploaded_file(
                 uploaded_file=uploaded_file,
                 operation_id=str(operation.id),
                 session_key=session_key,
             )
 
-            # Create the input file record
+            # Create the input file record with all fields including Cloudinary
             File.objects.create(
                 operation=operation,
                 file_type=FileType.INPUT,
-                file_path=file_info['file_path'],
+                file_path=file_info.get('file_path', ''),
                 file_name=file_info['file_name'],
                 file_size=file_info['file_size'],
                 mime_type=file_info['mime_type'],
+                # Cloudinary fields (empty strings if using local storage)
+                cloudinary_public_id=file_info.get('cloudinary_public_id', ''),
+                cloudinary_url=file_info.get('cloudinary_url', ''),
+                cloudinary_resource_type=file_info.get('cloudinary_resource_type', ''),
                 metadata={
                     "original_filename": uploaded_file.name,
                     "media_type": file_info['media_type'],
+                    "storage_location": "cloudinary" if file_info.get('cloudinary_public_id') else "local",
                 },
             )
 
+            storage_type = "Cloudinary" if file_info.get('cloudinary_public_id') else "local"
             logger.info(
                 f"Saved input file for job {operation.id}: {file_info['file_name']} "
-                f"({file_info['file_size']} bytes)"
+                f"({file_info['file_size']} bytes, storage={storage_type})"
             )
         
         except Exception as e:
@@ -250,21 +256,17 @@ class OperationsManager:
 
         try:
             operation_def = registry.get_operation(operation_name)
-            media_type = operation_def.get_media_type()
-            return QUEUE_MAPPING.get(media_type, "image_queue")
+            media_type = operation_def.media_type.value
+            return QUEUE_MAPPING.get(media_type, "video_queue")
         except Exception:
-             # Default to image queue if operation not found
-            logger.warning(
-                f"Could not determine queue for operation '{operation_name}', "
-                "defaulting to image_queue"
-            )
-            return "image_queue"
+            # Default to video queue if operation not found
+            return "video_queue"
     
 
     @staticmethod
     def get_timeout_for_operation(operation_name: str) -> int:
         """
-        Get the timeout in seconds for an operation.
+        Get the appropriate timeout for an operation.
         
         Args:
             operation_name: Name of the operation
@@ -279,188 +281,18 @@ class OperationsManager:
         try:
             operation_def = registry.get_operation(operation_name)
             media_type = operation_def.media_type.value
-            return TIMEOUT_MAPPING.get(media_type, 60)
+            return TIMEOUT_MAPPING.get(media_type, 1800)
         except Exception:
-            # Default to 60 seconds if operation not found
-            return 60
-    
+            # Default to video timeout if operation not found
+            return 1800
 
-    # Operation status updates
-
-    @staticmethod
-    def start_operation(operation_id: UUID) -> Operation:
-        """
-        Mark a job as started (processing).
-        
-        Args:
-            operation_id: UUID of the operation/job
-            
-        Returns:
-            Updated Operation/job instance
-            
-        Raises:
-            OperationNotFoundError: If operation/job doesn't exist
-            InvalidOperationStateError: If operation/job is not in QUEUED status
-        """
-        operation = OperationsManager._get_operation_by_id(operation_id)
-
-        if operation.status != OperationStatus.QUEUED:
-            raise InvalidOperationStateError(
-                operation_id=str(operation_id),
-                current_status=operation.status,
-                expected_statuses=[OperationStatus.QUEUED],
-            )
-        
-        operation.status = OperationStatus.PROCESSING
-        operation.started_at = timezone.now()
-        operation.save(update_fields=['status', 'started_at'])
-
-        logger.info(f"Started processing operation {operation_id}")
-
-        return operation
-    
-
-    @staticmethod
-    def update_operation_progress(
-        operation_id: UUID,
-        progress: int,
-        status: Optional[str] = None
-    ) -> Operation:
-        """
-        Update the progress of a operation/job.
-        
-        Args:
-            job_id: UUID of the operation/job
-            progress: Progress percentage (0-100)
-            status: Optional new status
-            
-        Returns:
-            Updated Operation instance
-            
-        Raises:
-            OperationNotFoundError: If operation/job doesn't exist
-        """
-        operation = OperationsManager._get_operation_by_id(operation_id)
-
-        # Clamp progress between 0 and 100
-        operation.progress = max(0, min(100, progress))
-
-        update_fields = ['progress']
-
-        if status is not None:
-            operation.status = status
-            update_fields.append('status')
-        
-        operation.save(update_fields=update_fields)
-
-        logger.debug(f"Updated operation {operation_id} progress to {progress}%")
-
-        return operation
-    
-
-    @staticmethod
-    @transaction.atomic
-    def complete_operation(
-        operation_id: UUID,
-        output_file_path: str,
-        output_filename: str,
-        session_key: str,
-    ) -> Operation:
-        """
-        Mark a operation/job as completed and register the output file.
-        
-        Args:
-            operation_id: UUID of the operation/job
-            output_file_path: Path to the processed output file (temp location)
-            output_filename: Desired filename for the output
-            session_key: User's session key
-            
-        Returns:
-            Updated Operation instance
-            
-        Raises:
-            OperationNotFoundError: If operation/job doesn't exist
-        """
-        operation = OperationsManager._get_operation_by_id(operation_id)
-
-        now = timezone.now()
-
-        # Move output file to permanent storage
-        output_info = FileManager.move_to_output(
-            temp_path=output_file_path,
-            operation_id=str(operation_id),
-            session_key=session_key,
-            output_filename=output_filename,
-        )
-
-        # Create output file record
-        File.objects.create(
-            operation=operation,
-            file_type=FileType.OUTPUT,
-            file_path=output_info['file_path'],
-            file_name=output_info['file_name'],
-            file_size=output_info['file_size'],
-            mime_type=output_info['mime_type'],
-            metadata={},
-        )
-
-        # Update operation status to COMPLETED
-        operation.status = OperationStatus.COMPLETED
-        operation.progress = 100
-        operation.completed_at = now
-        operation.expires_at = now + timedelta(days=DEFAULT_EXPIRATION_DAYS)
-        operation.save(update_fields=["status", "progress", "completed_at", "expires_at"])
-
-        # Clean up temp directory
-        FileManager.cleanup_temp_directory(str(operation_id))
-
-        logger.info(
-            f"Comepleted operation {operation_id} - output: {output_info['file_name']}"
-            f"({output_info['file_size']} bytes)"
-        )
-
-        return operation
-    
-
-    @staticmethod
-    def fail_operation(operation_id: UUID, error_message: str) -> Operation:
-        """
-        Mark a operation/job as failed with an error message.
-        
-        Args:
-            operation_id: UUID of the operation/job
-            error_message: Description of what went wrong
-            
-        Returns:
-            Updated Operation instance
-            
-        Raises:
-            OperationNotFoundError: If operation/job doesn't exist
-        """
-        operation = OperationsManager._get_operation_by_id(operation_id)
-
-        now = timezone.now()
-
-        operation.status = OperationStatus.FAILED
-        operation.error_message = error_message[:2000]
-        operation.completed_at = now
-        operation.expires_at = now + timedelta(days=DEFAULT_EXPIRATION_DAYS)
-        operation.save(update_fields=["status", "error_message", "completed_at", "expires_at"])
-
-        # Clean up temp directory
-        FileManager.cleanup_temp_directory(str(operation_id))
-
-        logger.error(f"Operation {operation.id} failed: {error_message[:200]}")
-
-        return operation
-    
 
     # OPERATION RETRIEVAL
-
+    
     @staticmethod
     def get_operation(operation_id: UUID, session_key: str) -> Operation:
         """
-        Retrieve a operation with ownership verification.
+        Retrieve an operation by ID with ownership validation.
         
         Args:
             operation_id: UUID of the operation
@@ -473,89 +305,218 @@ class OperationsManager:
             OperationNotFoundError: If operation doesn't exist
             OperationAccessDeniedError: If operation doesn't belong to session
         """
-        operation = OperationsManager._get_operation_by_id(operation_id)
-
-        # Verify session ownership
-        if operation.session_key != session_key:
-            raise OperationAccessDeniedError(
-                operation_id=str(operation_id),
-                session_key=session_key
-            )
-        
-        return operation
-    
-
-    @staticmethod
-    def get_operation_with_files(operation_id: UUID, session_key: str) -> Operation:
-        """
-        Retrieve an operation with its files, with ownership verification.
-        
-        Args:
-            operation_id: UUID of the operation
-            session_key: User's session key for ownership check
-            
-        Returns:
-            Operation instance with prefetched files
-            
-        Raises:
-            OperationNotFoundError: If operation doesn't exist
-            OperationAccessDeniedError: If operation doesn't belong to session
-        """
         try:
-            operation = Operation.objects.prefetch_related('files').get(id=operation_id, is_deleted=False)
+            operation = Operation.objects.prefetch_related('files').get(
+                id=operation_id,
+                is_deleted=False
+            )
         except Operation.DoesNotExist:
             raise OperationNotFoundError(str(operation_id))
         
-        # Verify session ownership
+        # Verify ownership
         if operation.session_key != session_key:
-            raise OperationAccessDeniedError(
-                operation_id=str(operation_id),
-                session_key=session_key
-            )
+            raise OperationAccessDeniedError(str(operation_id))
         
         return operation
     
 
     @staticmethod
-    def list_user_operations(
+    def list_operations(
         session_key: str,
-        limit: int = 50,
         status_filter: Optional[str] = None,
-        include_deleted: bool = False,
+        operation_filter: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
     ) -> List[Operation]:
         """
-        List all operations for a session.
+        List operations for a session with optional filtering.
         
         Args:
             session_key: User's session key
-            limit: Maximum number of operations to return
             status_filter: Optional status to filter by
-            include_deleted: Whether to include soft-deleted operations
+            operation_filter: Optional operation name to filter by
+            limit: Maximum number of results
+            offset: Offset for pagination
             
         Returns:
             List of Operation instances
         """
-        queryset = Operation.objects.filter(session_key=session_key)
+        queryset = Operation.objects.filter(
+            session_key=session_key,
+            is_deleted=False
+        ).prefetch_related('files')
 
-        if not include_deleted:
-            queryset = queryset.filter(is_deleted=False)
-        
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Ordery by most recent first
+        if operation_filter:
+            queryset = queryset.filter(operation=operation_filter)
+        
         queryset = queryset.order_by('-created_at')
 
-        if limit:
-            queryset = queryset[:limit]
-        
-        return list(queryset)
+        return list(queryset[offset:offset + limit])
     
+
+    @staticmethod
+    def count_operations(
+        session_key: str,
+        status_filter: Optional[str] = None
+    ) -> int:
+        """
+        Count operations for a session.
+        
+        Args:
+            session_key: User's session key
+            status_filter: Optional status to filter by
+            
+        Returns:
+            Count of matching operations
+        """
+        queryset = Operation.objects.filter(
+            session_key=session_key,
+            is_deleted=False
+        )
+
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        return queryset.count()
+    
+
+    # STATUS UPDATES
+
+    @staticmethod
+    def update_progress(operation_id: UUID, progress: int) -> None:
+        """
+        Update an operation's progress.
+        
+        Args:
+            operation_id: UUID of the operation
+            progress: Progress percentage (0-100)
+        """
+        # Clamp progress to valid range
+        progress = max(0, min(100, progress))
+
+        Operation.objects.filter(id=operation_id).update(progress=progress)
+        logger.debug(f"Updated progress for operation {operation_id}: {progress}%")
+    
+
+    @staticmethod
+    def mark_operation_started(operation_id: UUID) -> None:
+        """
+        Mark an operation as started (processing).
+        
+        Args:
+            operation_id: UUID of the operation
+        """
+        Operation.objects.filter(id=operation_id).update(
+            status=OperationStatus.PROCESSING,
+            started_at=timezone.now(),
+            progress=0
+        )
+        logger.info(f"Operation {operation_id} marked as PROCESSING")
+    
+
+    @staticmethod
+    def mark_operation_completed(
+        operation_id: UUID,
+        output_path: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Mark an operation as successfully completed.
+        
+        Args:
+            operation_id: UUID of the operation
+            output_path: Path to the output file (local or Cloudinary public_id)
+            metadata: Optional processing metadata
+        """
+        expiration_days = getattr(settings, 'OPERATION_EXPIRATION_DAYS', DEFAULT_EXPIRATION_DAYS)
+        now = timezone.now()
+
+        update_fields = {
+            'status': OperationStatus.COMPLETED,
+            'progress': 100,
+            'completed_at': now,
+            'expires_at': now + timedelta(days=expiration_days),
+            'error_message': None
+        }
+
+        # Update with metadata if provided
+        if metadata:
+            operation = OperationsManager._get_operation_by_id(operation_id)
+            params = operation.parameters or {}
+            params['_processing_metadata'] = metadata
+            update_fields['parameters'] = params
+            operation.status = OperationStatus.COMPLETED
+            operation.progress = 100
+            operation.completed_at = now
+            operation.expires_at = now + timedelta(days=expiration_days)
+            operation.error_message = None
+            operation.parameters = params
+            operation.save()
+        else:
+            Operation.objects.filter(id=operation_id).update(**update_fields)
+
+        logger.info(f"Operation {operation_id} marked as COMPLETED")
+    
+
+    @staticmethod
+    def mark_operation_failed(
+        operation_id: UUID,
+        error_message: str,
+        is_retryable: bool = False,
+        error_code: str = "PROCESSING_ERROR"
+    ) -> None:
+        """
+        Mark an operation as failed.
+        
+        Args:
+            operation_id: UUID of the operation
+            error_message: User-friendly error message
+            is_retryable: Whether the operation can be retried
+            error_code: Error code for classification
+        """
+        expiration_days = getattr(settings, 'OPERATION_EXPIRATION_DAYS', DEFAULT_EXPIRATION_DAYS)
+        now = timezone.now()
+
+        try:
+            operation = OperationsManager._get_operation_by_id(operation_id)
+            
+            params = operation.parameters or {}
+            params['_error_info'] = {
+                'error_code': error_code,
+                'is_retryable': is_retryable,
+                'failed_at': now.isoformat()
+            }
+
+            operation.status = OperationStatus.FAILED
+            operation.error_message = error_message
+            operation.completed_at = now
+            operation.expires_at = now + timedelta(days=expiration_days)
+            operation.parameters = params
+            operation.save(update_fields=[
+                'status', 'error_message', 'completed_at', 'expires_at', 'parameters'
+            ])
+
+            logger.info(
+                f"Operation {operation_id} marked as FAILED "
+                f"(retryable={is_retryable}, code={error_code})"
+            )
+        except Exception as e:
+            # Fallback to simple update if full update fails
+            logger.error(f"Failed to fully update operation {operation_id}: {e}")
+            Operation.objects.filter(id=operation_id).update(
+                status=OperationStatus.FAILED,
+                error_message=error_message,
+                completed_at=timezone.now()
+            )
+
 
     @staticmethod
     def get_operation_status(operation_id: UUID, session_key: str) -> Dict[str, Any]:
         """
-        Get lightweight status information for an operation (for polling).
+        Get lightweight status information for polling.
         
         Args:
             operation_id: UUID of the operation
@@ -563,10 +524,6 @@ class OperationsManager:
             
         Returns:
             Dictionary with status information
-            
-        Raises:
-            OperationNotFoundError: If operation doesn't exist
-            OperationAccessDeniedError: If operation doesn't belong to session
         """
         operation = OperationsManager.get_operation(operation_id, session_key)
 
@@ -574,7 +531,21 @@ class OperationsManager:
             "id": str(operation.id),
             "status": operation.status,
             "progress": operation.progress,
+            "is_complete": operation.status in [
+                OperationStatus.COMPLETED, 
+                OperationStatus.FAILED
+            ],
+            "has_output": False,
         }
+
+        # Check for output file
+        if operation.status == OperationStatus.COMPLETED:
+            output_file = operation.files.filter(file_type=FileType.OUTPUT).first()
+            result["has_output"] = output_file is not None
+            if output_file:
+                result["storage_location"] = (
+                    "cloudinary" if output_file.cloudinary_public_id else "local"
+                )
 
         # Add error message if failed
         if operation.status == OperationStatus.FAILED and operation.error_message:
@@ -616,18 +587,30 @@ class OperationsManager:
                 current_status=operation.status
             )
         
-        # Delete physical files
+        # Collect Cloudinary files for deletion
+        cloudinary_files = []
+        for file_obj in operation.files.all():
+            if file_obj.cloudinary_public_id:
+                cloudinary_files.append({
+                    'public_id': file_obj.cloudinary_public_id,
+                    'resource_type': file_obj.cloudinary_resource_type or 'auto',
+                })
+
+        # Delete physical files (local and/or Cloudinary)
         deleted_count = FileManager.delete_operation_files(
             operation_id=str(operation_id),
-            session_key=session_key
+            session_key=session_key,
+            cloudinary_files=cloudinary_files if cloudinary_files else None,
         )
 
         # Soft delete the operation record
         operation.is_deleted = True
         operation.save(update_fields=['is_deleted'])
 
+        storage_type = "cloudinary" if cloudinary_files else "local"
         logger.info(
-            f"Deleted operation {operation_id} (soft delete, {deleted_count} files removed)"
+            f"Deleted operation {operation_id} (soft delete, {deleted_count} files removed, "
+            f"storage={storage_type})"
         )
 
         return True
@@ -647,13 +630,23 @@ class OperationsManager:
             True if deleted successfully
         """
         try:
-            operation = Operation.objects.get(id=operation_id)
+            operation = Operation.objects.prefetch_related('files').get(id=operation_id)
             session_key = operation.session_key or "anonymous"
+
+            # Collect Cloudinary files for deletion
+            cloudinary_files = []
+            for file_obj in operation.files.all():
+                if file_obj.cloudinary_public_id:
+                    cloudinary_files.append({
+                        'public_id': file_obj.cloudinary_public_id,
+                        'resource_type': file_obj.cloudinary_resource_type or 'auto',
+                    })
 
             # Delete physical files
             FileManager.delete_operation_files(
                 operation_id=str(operation_id),
-                session_key=session_key
+                session_key=session_key,
+                cloudinary_files=cloudinary_files if cloudinary_files else None,
             )
 
             # Permanently delete the operation record
@@ -794,8 +787,8 @@ class OperationsManager:
                 queue = django_rq.get_queue(queue_name)
                 stats[queue_name] = {
                     "queued": queue.count,
-                    "started": queue.started_operation_registry.count,
-                    "failed": queue.failed_operation_registry.count,
+                    "started": queue.started_job_registry.count,
+                    "failed": queue.failed_job_registry.count,
                 }
         
         except Exception as e:
@@ -828,8 +821,7 @@ class OperationsManager:
             OperationAccessDeniedError: If operation doesn't belong to session
             InvalidOperationStateError: If operation is not in a cancellable state
         """
-        operation = OperationsManager.get_operation(operation_id,
-        session_key)
+        operation = OperationsManager.get_operation(operation_id, session_key)
 
         cancellable_statuses = [
             OperationStatus.PENDING,
@@ -892,6 +884,8 @@ class OperationsManager:
         stats = {
             "operations_processed": 0,
             "operations_deleted": 0,
+            "cloudinary_files_deleted": 0,
+            "local_files_deleted": 0,
             "errors": [],
         }
 
@@ -899,16 +893,32 @@ class OperationsManager:
         expired_operations = Operation.objects.filter(
             is_deleted=False,
             expires_at__lte=timezone.now()
-        )
+        ).prefetch_related('files')
 
         for operation in expired_operations:
             stats["operations_processed"] += 1
             try:
                 if not dry_run:
+                    # Collect Cloudinary files
+                    cloudinary_files = []
+                    for file_obj in operation.files.all():
+                        if file_obj.cloudinary_public_id:
+                            cloudinary_files.append({
+                                'public_id': file_obj.cloudinary_public_id,
+                                'resource_type': file_obj.cloudinary_resource_type or 'auto',
+                            })
+                    
+                    # Track storage type
+                    if cloudinary_files:
+                        stats["cloudinary_files_deleted"] += len(cloudinary_files)
+                    else:
+                        stats["local_files_deleted"] += operation.files.count()
+
                     # Delete files
                     FileManager.delete_operation_files(
                         operation_id=str(operation.id),
-                        session_key=operation.session_key or "anonymous"
+                        session_key=operation.session_key or "anonymous",
+                        cloudinary_files=cloudinary_files if cloudinary_files else None,
                     )
 
                     # Soft delete operation
@@ -924,10 +934,9 @@ class OperationsManager:
         
         logger.info(
             f"Cleanup complete: {stats['operations_deleted']} operations deleted "
-            f"({stats['operations_processed']} processed)"
+            f"({stats['operations_processed']} processed, "
+            f"{stats['cloudinary_files_deleted']} cloudinary files, "
+            f"{stats['local_files_deleted']} local files)"
         )
 
         return stats
-
-
-

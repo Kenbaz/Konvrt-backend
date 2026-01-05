@@ -8,6 +8,7 @@ from pathlib import Path
 import environ
 import secrets
 import dj_database_url
+import cloudinary
 
 # Initialize environment variables
 env = environ.Env(
@@ -139,12 +140,43 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'storage'
+MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', BASE_DIR / 'storage'))
 
 # Custom storage paths
 UPLOAD_DIR = MEDIA_ROOT / 'uploads'
 OUTPUT_DIR = MEDIA_ROOT / 'outputs'
 TEMP_DIR = MEDIA_ROOT / 'temp'
+
+# Cloudinary configuration
+CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
+CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
+CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+CLOUDINARY_ROOT_FOLDER = os.getenv('CLOUDINARY_ROOT_FOLDER')
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True
+)
+
+# Cloudinary storage settings 
+CLOUDINARY_STORAGE = {
+    'ROOT_FOLDER': CLOUDINARY_ROOT_FOLDER,
+
+    'UPLOADS_FOLDER': 'uploads',
+    'OUTPUTS_FOLDER': 'outputs',
+
+    'DOWNLOAD_URL_EXPIRY': 3600,
+
+    'RESOURCE_TYPE_MAP': {
+        'video': 'video',
+        'image': 'image',
+        'audio': 'video',
+    }
+}
+
+USE_CLOUDINARY = env.bool('USE_CLOUDINARY', default=True)
 
 # File upload settings
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760 #10MB

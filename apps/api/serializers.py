@@ -19,11 +19,17 @@ from rest_framework import serializers
 logger = logging.getLogger(__name__)
 
 
+def _use_cloudinary() -> bool:
+    """Check if Cloudinary storage is enabled."""
+    return getattr(settings, 'USE_CLOUDINARY', False)
+
+
 class FileSerializer(serializers.Serializer):
     """
     Serializer for File model.
     
     Used for representing input and output files in API responses.
+    Supports both local storage and Cloudinary storage.
     """
     id = serializers.UUIDField(read_only=True)
     file_type = serializers.CharField(read_only=True)
@@ -32,11 +38,15 @@ class FileSerializer(serializers.Serializer):
     mime_type = serializers.CharField(read_only=True)
     created_at = serializers.DateTimeField(read_only=True)
 
-    # Computing fields
-    file_size_formated = serializers.SerializerMethodField()
+    # Computed fields
+    file_size_formatted = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
+    storage_location = serializers.SerializerMethodField()
+    
+    # Cloudinary-specific fields (only populated when using Cloudinary)
+    cloudinary_url = serializers.SerializerMethodField()
 
-    def get_file_size_formated(self, obj) -> str:
+    def get_file_size_formatted(self, obj) -> str:
         """Format file size in human-readable form."""
         size = obj.file_size
         if size < 1024:
@@ -49,13 +59,67 @@ class FileSerializer(serializers.Serializer):
             return f"{size / (1024 * 1024 * 1024):.2f} GB"
     
     def get_download_url(self, obj) -> str:
-        """Generate the download URL for the file"""
+        """
+        Generate the download URL for the file.
+        
+        For Cloudinary files: Returns the Cloudinary URL
+        For local files: Returns the API download endpoint URL
+        """
+        # Check if file is stored in Cloudinary
+        if hasattr(obj, 'cloudinary_public_id') and obj.cloudinary_public_id:
+            # Return Cloudinary URL directly
+            if hasattr(obj, 'cloudinary_url') and obj.cloudinary_url:
+                return obj.cloudinary_url
+            
+            # Generate URL if not stored
+            try:
+                from apps.operations.services.cloudinary_storage import CloudinaryStorageService
+                return CloudinaryStorageService.get_download_url(
+                    public_id=obj.cloudinary_public_id,
+                    resource_type=getattr(obj, 'cloudinary_resource_type', 'auto'),
+                    attachment=True,
+                )
+            except Exception:
+                pass
+        
+        # Local storage: build URL through API endpoint
         request = self.context.get('request')
-        if request and hasattr(obj, 'file_url'):
-            return request.build_absolute_uri(obj.file_url)
-        elif hasattr(obj, 'file_url'):
+        if request and hasattr(obj, 'operation_id'):
+            # Build URL to download endpoint
+            return request.build_absolute_uri(
+                f"/api/v1/operations/{obj.operation_id}/download/"
+            )
+        
+        # Fallback to file_url property
+        if hasattr(obj, 'file_url') and obj.file_url:
+            if request:
+                return request.build_absolute_uri(obj.file_url)
             return obj.file_url
-        return ""  # Fallback if no URL is available
+        
+        return ""
+    
+    def get_storage_location(self, obj) -> str:
+        """
+        Get the storage location type.
+        
+        Returns:
+            'cloudinary' if stored in Cloudinary, 'local' otherwise
+        """
+        if hasattr(obj, 'is_cloudinary_stored') and obj.is_cloudinary_stored:
+            return "cloudinary"
+        if hasattr(obj, 'cloudinary_public_id') and obj.cloudinary_public_id:
+            return "cloudinary"
+        return "local"
+    
+    def get_cloudinary_url(self, obj) -> str:
+        """
+        Get the direct Cloudinary URL if available.
+        
+        Returns empty string for local storage files.
+        """
+        if hasattr(obj, 'cloudinary_url') and obj.cloudinary_url:
+            return obj.cloudinary_url
+        return ""
 
 
 class OperationSerializer(serializers.Serializer):
@@ -384,7 +448,7 @@ class OperationCreateSerializer(serializers.Serializer):
         
         This method:
         1. Creates the operation record
-        2. Saves the uploaded file
+        2. Saves the uploaded file (to Cloudinary or local storage)
         3. Queues the operation for processing
         """
         from apps.operations.services.operations_manager import OperationsManager
@@ -487,11 +551,13 @@ class HealthCheckSerializer(serializers.Serializer):
     status = serializers.CharField(read_only=True)
     timestamp = serializers.DateTimeField(read_only=True)
     version = serializers.CharField(read_only=True)
+    storage_backend = serializers.CharField(read_only=True)
     
     # Component statuses
     database = serializers.DictField(read_only=True)
     redis = serializers.DictField(read_only=True)
     storage = serializers.DictField(read_only=True)
+    cloudinary = serializers.DictField(read_only=True, required=False)
     queues = serializers.DictField(read_only=True)
 
 

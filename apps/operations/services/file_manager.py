@@ -4,11 +4,15 @@
 File Manager Service for handling file operations.
 
 This module provides centralized file handling including:
-- Saving uploaded files
+- Saving uploaded files (to Cloudinary or local storage)
 - Validating files (size, type, format)
 - Moving files between directories
 - Cleaning up expired files
 - Deleting operation files
+
+Storage Backend:
+    When USE_CLOUDINARY=True: Files are uploaded to Cloudinary
+    When USE_CLOUDINARY=False: Files are saved to local MEDIA_ROOT
 """
 
 import logging
@@ -28,6 +32,8 @@ from ..exceptions import (
     FileNotFoundError as CustomFileNotFoundError,
     StorageError,
 )
+
+from .cloudinary_storage import CloudinaryStorageService, CloudinaryStorageError
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +111,17 @@ EXTENSION_MIME_MAPPING = {
 class FileManager:
     """
     Service class for managing file operations.
+    
+    Supports both Cloudinary (cloud) and local filesystem storage.
+    Storage backend is determined by USE_CLOUDINARY setting.
 
-    All methods are static as this is a stateless service
+    All methods are static as this is a stateless service.
     """
+
+    @staticmethod
+    def _use_cloudinary() -> bool:
+        """Check if Cloudinary storage is enabled."""
+        return getattr(settings, 'USE_CLOUDINARY', False)
 
     @staticmethod
     def save_uploaded_file(
@@ -116,7 +130,10 @@ class FileManager:
         session_key: str,
     ) -> dict:
         """
-        Save an uploaded file to disk and return file information.
+        Save an uploaded file and return file information.
+        
+        When USE_CLOUDINARY=True: Uploads to Cloudinary
+        When USE_CLOUDINARY=False: Saves to local MEDIA_ROOT
         
         Args:
             uploaded_file: The Django UploadedFile object
@@ -125,18 +142,20 @@ class FileManager:
             
         Returns:
             Dictionary containing file information:
-            - file_path: Relative path to saved file
+            - file_path: Relative path (local) or empty string (cloudinary)
             - file_name: Original filename (sanitized)
             - file_size: Size in bytes
             - mime_type: Detected MIME type
             - media_type: Category (video/image/audio)
+            - cloudinary_public_id: Cloudinary public ID (if using Cloudinary)
+            - cloudinary_url: Cloudinary URL (if using Cloudinary)
+            - cloudinary_resource_type: Cloudinary resource type (if using Cloudinary)
             
         Raises:
             FileTooLargeError: If file exceeds size limit
             UnsupportedFileFormatError: If format not supported
             StorageError: If unable to save file
         """
-
         # Sanitize filename
         original_filename = uploaded_file.name
         sanitized_filename = FileManager.sanitize_filename(original_filename)
@@ -165,6 +184,89 @@ class FileManager:
             media_type=media_type,
         )
 
+        # Use Cloudinary or local storage
+        if FileManager._use_cloudinary():
+            return FileManager._save_to_cloudinary(
+                uploaded_file=uploaded_file,
+                operation_id=operation_id,
+                session_key=session_key,
+                sanitized_filename=sanitized_filename,
+                file_size=file_size,
+                mime_type=mime_type,
+                media_type=media_type,
+            )
+        else:
+            return FileManager._save_to_local(
+                uploaded_file=uploaded_file,
+                operation_id=operation_id,
+                session_key=session_key,
+                sanitized_filename=sanitized_filename,
+                file_size=file_size,
+                mime_type=mime_type,
+                media_type=media_type,
+            )
+
+    @staticmethod
+    def _save_to_cloudinary(
+        uploaded_file: UploadedFile,
+        operation_id: str,
+        session_key: str,
+        sanitized_filename: str,
+        file_size: int,
+        mime_type: str,
+        media_type: str,
+    ) -> dict:
+        """
+        Save uploaded file to Cloudinary
+        """
+        try:
+            # Upload to Cloudinary
+            result = CloudinaryStorageService.upload_file(
+                file_source=uploaded_file,
+                folder_type='uploads',
+                session_key=session_key,
+                operation_id=operation_id,
+                filename=sanitized_filename,
+                media_type=media_type,
+            )
+            
+            logger.info(
+                f"Uploaded file to Cloudinary: {sanitized_filename} "
+                f"(operation={operation_id}, public_id={result.public_id})"
+            )
+            
+            return {
+                "file_path": "",
+                "file_name": sanitized_filename,
+                "file_size": result.bytes or file_size,
+                "mime_type": mime_type,
+                "media_type": media_type,
+                "cloudinary_public_id": result.public_id,
+                "cloudinary_url": result.secure_url,
+                "cloudinary_resource_type": result.resource_type,
+            }
+            
+        except CloudinaryStorageError as e:
+            logger.error(f"Cloudinary upload failed: {e}")
+            raise StorageError(
+                operation="upload",
+                path=sanitized_filename,
+                reason=str(e),
+            )
+
+    @staticmethod
+    def _save_to_local(
+        uploaded_file: UploadedFile,
+        operation_id: str,
+        session_key: str,
+        sanitized_filename: str,
+        file_size: int,
+        mime_type: str,
+        media_type: str,
+    ) -> dict:
+        """
+        Save uploaded file to local filesystem
+        """
         # Generate file path
         file_path, full_path = FileManager.get_uploaded_file_path(
             session_key=session_key,
@@ -178,7 +280,7 @@ class FileManager:
             os.makedirs(directory, exist_ok=True)
         except OSError as e:
             raise StorageError(
-                operation="create_file_directory",
+                operation="create_directory",
                 path=directory,
                 reason=str(e),
             )
@@ -186,8 +288,8 @@ class FileManager:
         # Save file to disk
         try:
             with open(full_path, 'wb+') as destination:
-                for chunck in uploaded_file.chunks():
-                    destination.write(chunck)
+                for chunk in uploaded_file.chunks():
+                    destination.write(chunk)
         except (IOError, OSError) as e:
             raise StorageError(
                 operation="save_file",
@@ -196,8 +298,8 @@ class FileManager:
             )
         
         logger.info(
-            f"Saved uploaded file: {sanitized_filename} "
-            f"(Operation={operation_id}, size={file_size}, type={mime_type})"
+            f"Saved uploaded file locally: {sanitized_filename} "
+            f"(operation={operation_id}, size={file_size}, type={mime_type})"
         )
 
         return {
@@ -206,8 +308,288 @@ class FileManager:
             "file_size": file_size,
             "mime_type": mime_type,
             "media_type": media_type,
+            "cloudinary_public_id": "",
+            "cloudinary_url": "",
+            "cloudinary_resource_type": "",
         }
 
+    @staticmethod
+    def move_to_output(
+        temp_path: str,
+        operation_id: str,
+        session_key: str,
+        output_filename: str,
+        media_type: str = "video",
+    ) -> dict:
+        """
+        Move a processed file from temp to output storage.
+        
+        When USE_CLOUDINARY=True: Uploads temp file to Cloudinary outputs folder
+        When USE_CLOUDINARY=False: Moves file to local outputs directory
+        """
+        # Verify temp file exists
+        if not os.path.exists(temp_path):
+            raise FileNotFoundError(temp_path)
+        
+        # Get file info
+        file_size = os.path.getsize(temp_path)
+        extension = FileManager.get_file_extension(output_filename)
+        mime_type = EXTENSION_MIME_MAPPING.get(extension, "application/octet-stream")
+        
+        if FileManager._use_cloudinary():
+            return FileManager._move_to_cloudinary_output(
+                temp_path=temp_path,
+                operation_id=operation_id,
+                session_key=session_key,
+                output_filename=output_filename,
+                file_size=file_size,
+                mime_type=mime_type,
+                media_type=media_type,
+            )
+        else:
+            return FileManager._move_to_local_output(
+                temp_path=temp_path,
+                operation_id=operation_id,
+                session_key=session_key,
+                output_filename=output_filename,
+                file_size=file_size,
+                mime_type=mime_type,
+            )
+
+    @staticmethod
+    def _move_to_cloudinary_output(
+        temp_path: str,
+        operation_id: str,
+        session_key: str,
+        output_filename: str,
+        file_size: int,
+        mime_type: str,
+        media_type: str,
+    ) -> dict:
+        """
+        Upload processed file from temp to Cloudinary outputs folder
+        """
+        try:
+            # Upload to Cloudinary outputs folder
+            result = CloudinaryStorageService.upload_from_path(
+                file_path=temp_path,
+                folder_type='outputs',
+                session_key=session_key,
+                operation_id=operation_id,
+                filename=output_filename,
+                media_type=media_type,
+            )
+            
+            logger.info(
+                f"Uploaded output to Cloudinary: {output_filename} "
+                f"(operation={operation_id}, public_id={result.public_id})"
+            )
+            
+            return {
+                "file_path": "",
+                "file_name": output_filename,
+                "file_size": result.bytes or file_size,
+                "mime_type": mime_type,
+                "cloudinary_public_id": result.public_id,
+                "cloudinary_url": result.secure_url,
+                "cloudinary_resource_type": result.resource_type,
+            }
+            
+        except CloudinaryStorageError as e:
+            logger.error(f"Cloudinary output upload failed: {e}")
+            raise StorageError(
+                operation="upload_output",
+                path=output_filename,
+                reason=str(e),
+            )
+
+    @staticmethod
+    def _move_to_local_output(
+        temp_path: str,
+        operation_id: str,
+        session_key: str,
+        output_filename: str,
+        file_size: int,
+        mime_type: str,
+    ) -> dict:
+        """
+        Move processed file from temp to local outputs directory
+        """
+        # Generate output path
+        output_path, full_output_path = FileManager.get_output_path(
+            session_key=session_key,
+            operation_id=operation_id,
+            filename=output_filename
+        )
+
+        # Ensure output directory exists
+        output_dir = os.path.dirname(full_output_path)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            raise StorageError(
+                operation="create_directory",
+                path=output_dir,
+                reason=str(e),
+            )
+        
+        # Move file
+        try:
+            shutil.move(temp_path, full_output_path)
+        except (IOError, OSError, shutil.Error) as e:
+            raise StorageError(
+                operation="move_file",
+                path=temp_path,
+                reason=str(e),
+            )
+        
+        # Recalculate file size after move
+        actual_file_size = os.path.getsize(full_output_path)
+        
+        logger.info(
+            f"Moved output file locally: {output_filename} "
+            f"(operation={operation_id}, size={actual_file_size})"
+        )
+        
+        return {
+            "file_path": output_path,
+            "file_name": output_filename,
+            "file_size": actual_file_size,
+            "mime_type": mime_type,
+            "cloudinary_public_id": "",
+            "cloudinary_url": "",
+            "cloudinary_resource_type": "",
+        }
+
+    @staticmethod
+    def delete_operation_files(
+        operation_id: str,
+        session_key: str,
+        cloudinary_files: Optional[list] = None,
+    ) -> int:
+        """
+        Delete all files associated with an operation
+        """
+        deleted_count = 0
+        
+        # Delete from Cloudinary if files are provided
+        if cloudinary_files:
+            for file_info in cloudinary_files:
+                public_id = file_info.get('public_id') or file_info.get('cloudinary_public_id')
+                resource_type = file_info.get('resource_type') or file_info.get('cloudinary_resource_type', 'auto')
+                
+                if public_id:
+                    try:
+                        CloudinaryStorageService.delete_file(public_id, resource_type)
+                        deleted_count += 1
+                        logger.debug(f"Deleted Cloudinary file: {public_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete Cloudinary file {public_id}: {e}")
+        
+        # Also try to delete Cloudinary folders for this operation
+        if FileManager._use_cloudinary():
+            root_folder = settings.CLOUDINARY_STORAGE.get('ROOT_FOLDER', 'mediaprocessor')
+            safe_session = session_key[:32] if session_key else 'anonymous'
+            
+            # Delete uploads folder
+            uploads_folder = f"{root_folder}/uploads/{safe_session}/{operation_id}"
+            deleted_count += CloudinaryStorageService.delete_folder(uploads_folder)
+            
+            # Delete outputs folder
+            outputs_folder = f"{root_folder}/outputs/{safe_session}/{operation_id}"
+            deleted_count += CloudinaryStorageService.delete_folder(outputs_folder)
+
+        # Delete local directories (for local storage or temp files)
+        deleted_count += FileManager._delete_local_operation_files(operation_id, session_key)
+        
+        return deleted_count
+
+    @staticmethod
+    def _delete_local_operation_files(operation_id: str, session_key: str) -> int:
+        """
+        Delete local files associated with an operation
+        """
+        deleted_count = 0
+        safe_session = session_key[:32] if session_key else 'anonymous'
+
+        # Delete upload directory
+        upload_dir = os.path.join(
+            settings.MEDIA_ROOT,
+            "uploads",
+            safe_session,
+            str(operation_id)
+        )
+        if os.path.exists(upload_dir):
+            try:
+                shutil.rmtree(upload_dir)
+                deleted_count += 1
+                logger.debug(f"Deleted upload directory: {upload_dir}")
+            except OSError as e:
+                logger.error(f"Failed to delete upload directory: {e}")
+        
+        # Delete output directory
+        output_dir = os.path.join(
+            settings.MEDIA_ROOT,
+            "outputs",
+            safe_session,
+            str(operation_id)
+        )
+        if os.path.exists(output_dir):
+            try:
+                shutil.rmtree(output_dir)
+                deleted_count += 1
+                logger.debug(f"Deleted output directory: {output_dir}")
+            except OSError as e:
+                logger.error(f"Failed to delete output directory: {e}")
+        
+        # Delete temp directory
+        temp_dir = os.path.join(
+            settings.MEDIA_ROOT,
+            "temp",
+            safe_session,
+            str(operation_id)
+        )
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                deleted_count += 1
+                logger.debug(f"Deleted temp directory: {temp_dir}")
+            except OSError as e:
+                logger.error(f"Failed to delete temp directory: {e}")
+        
+        return deleted_count
+
+    @staticmethod
+    def download_from_cloudinary(
+        public_id: str,
+        resource_type: str,
+        destination_dir: Optional[str] = None,
+    ) -> str:
+        """
+        Download a file from Cloudinary to local storage.
+        
+        This is used by workers to download input files for processing
+        """
+        try:
+            result = CloudinaryStorageService.download_file(
+                public_id=public_id,
+                resource_type=resource_type,
+                destination_dir=destination_dir,
+            )
+            
+            logger.info(
+                f"Downloaded file from Cloudinary: {public_id} -> {result.local_path}"
+            )
+            
+            return result.local_path
+            
+        except CloudinaryStorageError as e:
+            logger.error(f"Cloudinary download failed: {e}")
+            raise StorageError(
+                operation="download",
+                path=public_id,
+                reason=str(e),
+            )
 
     @staticmethod
     def validate_file(
@@ -229,7 +611,6 @@ class FileManager:
             FileTooLargeError: If file exceeds size limit
             UnsupportedFileFormatError: If format not supported
         """
-        
         # Get max file size for media type
         max_size = FileManager._get_max_file_size(media_type)
 
@@ -254,27 +635,25 @@ class FileManager:
                 supported_formats=supported_formats,
             )
 
-
     @staticmethod
     def detect_mime_type(uploaded_file: UploadedFile, extension: str) -> str:
         """
-            Detect the MIME type of an uploaded file.
+        Detect the MIME type of an uploaded file.
+        
+        First tries to use python-magic for accurate detection,
+        falls back to extension-based detection if magic is unavailable.
+        
+        Args:
+            uploaded_file: The uploaded file object
+            extension: File extension
             
-            First tries to use python-magic for accurate detection,
-            falls back to extension-based detection if magic is unavailable.
-            
-            Args:
-                uploaded_file: The uploaded file object
-                extension: File extension
-                
-            Returns:
-                Detected MIME type string
+        Returns:
+            Detected MIME type string
         """
-
         # First try content_type from upload
         content_type = getattr(uploaded_file, 'content_type', None)
 
-        # Try usisng python-magic if available
+        # Try using python-magic if available
         try:
             import magic
 
@@ -303,7 +682,6 @@ class FileManager:
         # Return a generic type based on extension
         return f"application/{ext}" if extension else "application/octet-stream"
 
-
     @staticmethod
     def get_media_type_from_mime_type(mime_type: str) -> Optional[str]:
         """
@@ -315,12 +693,11 @@ class FileManager:
         Returns:
             Media type category (video/image/audio) or None if unknown
         """
-
         # Direct lookup
         if mime_type in MIME_TYPE_MAP:
             return MIME_TYPE_MAP[mime_type]
         
-        # Try to infer MIME type prefix
+        # Try to infer from MIME type prefix
         if mime_type.startswith("video/"):
             return "video"
         if mime_type.startswith("image/"):
@@ -329,7 +706,6 @@ class FileManager:
             return "audio"
         
         return None
-    
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:
@@ -342,7 +718,6 @@ class FileManager:
         Returns:
             Sanitized filename safe for filesystem operations
         """
-
         if not filename:
             return f"file_{uuid.uuid4().hex[:8]}"
         
@@ -376,7 +751,6 @@ class FileManager:
             ext = re.sub(r'[^a-z0-9.]', '', ext)
         
         return f"{name}{ext}"
-    
 
     @staticmethod
     def get_file_extension(filename: str) -> str:
@@ -394,7 +768,6 @@ class FileManager:
         
         _, ext = os.path.splitext(filename)
         return ext.lstrip('.').lower()
-    
 
     @staticmethod
     def get_uploaded_file_path(
@@ -403,7 +776,7 @@ class FileManager:
         filename: str
     ) -> Tuple[str, str]:
         """
-        Generate paths for uploaded files.
+        Generate paths for uploaded files (local storage).
         
         Args:
             session_key: User's session key
@@ -414,9 +787,10 @@ class FileManager:
             Tuple of (relative_path, full_path)
         """
         # Structure: uploads/{session_key}/{operation_id}/{filename}
+        safe_session = session_key[:32] if session_key else 'anonymous'
         relative_path = os.path.join(
             "uploads",
-            session_key[:32], # Truncate key for path safety
+            safe_session,
             str(operation_id),
             filename
         )
@@ -424,7 +798,6 @@ class FileManager:
         full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
 
         return relative_path, full_path
-    
 
     @staticmethod
     def get_output_path(
@@ -433,7 +806,7 @@ class FileManager:
         filename: str
     ) -> Tuple[str, str]:
         """
-        Generate paths for output files.
+        Generate paths for output files (local storage).
         
         Args:
             session_key: User's session key
@@ -444,9 +817,10 @@ class FileManager:
             Tuple of (relative_path, full_path)
         """
         # Structure: outputs/{session_key}/{operation_id}/{filename}
+        safe_session = session_key[:32] if session_key else 'anonymous'
         relative_path = os.path.join(
             "outputs",
-            session_key[:32],
+            safe_session,
             str(operation_id),
             filename
         )
@@ -454,212 +828,6 @@ class FileManager:
         full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
 
         return relative_path, full_path
-    
-    @staticmethod
-    def move_to_output(
-        temp_path: str,
-        operation_id: str,
-        session_key: str,
-        output_filename: str,
-    ) -> dict:
-        """
-        Move a processed file from temp to output directory.
-        
-        Args:
-            temp_path: Full path to temporary file
-            operation_id: Operation UUID
-            session_key: User's session key
-            output_filename: Desired output filename
-            
-        Returns:
-            Dictionary containing output file information:
-            - file_path: Relative path to output file
-            - file_name: Output filename
-            - file_size: Size in bytes
-            - mime_type: MIME type
-            
-        Raises:
-            FileNotFoundError: If temp file doesn't exist
-            StorageError: If move operation fails
-        """
-        # Verify temp file exists
-        if not os.path.exists(temp_path):
-            raise CustomFileNotFoundError(temp_path)
-        
-        # Generate output path
-        output_path, full_output_path = FileManager.get_output_path(
-            session_key=session_key,
-            operation_id=operation_id,
-            filename=output_filename
-        )
-
-        # Ensure output directory exists
-        output_dir = os.path.dirname(full_output_path)
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except OSError as e:
-            raise StorageError(
-                operation="create_directory",
-                path=output_dir,
-                reason=str(e),
-            )
-        
-        # Move file
-        try:
-            shutil.move(temp_path, full_output_path)
-        except (IOError, OSError, shutil.Error) as e:
-            raise StorageError(
-                operation="move_file",
-                path=temp_path,
-                reason=str(e),
-            )
-        
-        # Get file info
-        file_size = os.path.getsize(full_output_path)
-        extension = FileManager.get_file_extension(output_filename)
-        mime_type = EXTENSION_MIME_MAPPING.get(extension, "application/octet-stream")
-        
-        logger.info(
-            f"Moved output file: {output_filename} "
-            f"(operation={operation_id}, size={file_size})"
-        )
-        
-        return {
-            "file_path": output_path,
-            "file_name": output_filename,
-            "file_size": file_size,
-            "mime_type": mime_type,
-        }
-    
-
-    @staticmethod
-    def delete_operation_files(operation_id: str, session_key: str) -> int:
-        """
-        Delete all files associated with an operation.
-        
-        Args:
-            operation_id: Operation UUID
-            session_key: User's session key
-            
-        Returns:
-            Number of files deleted
-        """
-        deleted_count = 0
-
-        # Delete upload directory
-        upload_dir = os.path.join(
-            settings.MEDIA_ROOT,
-            "uploads",
-            session_key[:32],
-            str(operation_id)
-        )
-        if os.path.exists(upload_dir):
-            try:
-                shutil.rmtree(upload_dir)
-                deleted_count += 1
-                logger.debug(f"Deleted upload directory: {upload_dir}")
-            except OSError as e:
-                logger.error(f"Failed to delete upload directory: {e}")
-        
-        # Delete output directory
-        output_dir = os.path.join(
-            settings.MEDIA_ROOT,
-            "outputs",
-            session_key[:32],
-            str(operation_id)
-        )
-        if os.path.exists(output_dir):
-            try:
-                shutil.rmtree(output_dir)
-                deleted_count += 1
-                logger.debug(f"Deleted output directory: {output_dir}")
-            except OSError as e:
-                logger.error(f"Failed to delete output directory: {e}")
-        
-        # Delete temp directory
-        temp_dir = os.path.join(
-            settings.MEDIA_ROOT,
-            "temp",
-            session_key[:32],
-            str(operation_id)
-        )
-        if os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-                deleted_count += 1
-                logger.debug(f"Deleted temp directory: {temp_dir}")
-            except OSError as e:
-                logger.error(f"Failed to delete temp directory: {e}")
-        
-        return deleted_count
-    
-
-    @staticmethod
-    def cleanup_expired_files(dry_run: bool = False) -> dict:
-        """
-        Clean up files for expired operations.
-        
-        This method is called periodically (e.g., via cron job)
-        to remove files for operations that have expired.
-        
-        Args:
-            dry_run: If True, only report what would be deleted
-            
-        Returns:
-            Dictionary with cleanup statistics:
-            - operations_cleaned: Number of operations processed
-            - files_deleted: Number of file directories deleted
-            - bytes_freed: Estimated bytes freed
-            - errors: List of any errors encountered
-        """
-        from ..models import Operation
-        from ..enums import OperationStatus
-
-        stats = {
-            "operations_cleaned": 0,
-            "files_deleted": 0,
-            "bytes_freed": 0,
-            "errors": [],
-        }
-
-        # Find expired operations that havent been soft-deleted
-        expired_operations = Operation.objects.filter(
-            expires_at__lt=timezone.now(),
-            is_deleted=False,
-        ).select_related()
-
-        for operation in expired_operations:
-            try:
-                # Calculate storage used before deletion
-                bytes_used = FileManager._calculate_operation_storage(operation)
-
-                if not dry_run:
-                    deleted = FileManager.delete_operation_files(
-                        operation_id=str(operation.id),
-                        session_key=operation.session_key or "anonymous",
-                    )
-
-                    # Mark operation as deleted
-                    operation.is_deleted = True
-                    operation.save(update_fields=['is_deleted'])
-
-                    stats["files_deleted"] += deleted
-
-                stats["operations_cleaned"] += 1
-                stats["bytes_freed"] += bytes_used
-            
-            except Exception as e:
-                error_msg = f"Error cleaning operation {operation.id}: {str(e)}"
-                logger.error(error_msg)
-                stats["errors"].append(error_msg)
-        
-        logger.info(
-            f"Cleanup complete: {stats['operations_cleaned']} operations, "
-            f"{stats['bytes_freed'] / (1024*1024):.2f} MB freed"
-        )
-
-        return stats
-    
 
     @staticmethod
     def get_file_full_path(file_path: str) -> str:
@@ -673,8 +841,7 @@ class FileManager:
             Full filesystem path
         """
         return os.path.join(settings.MEDIA_ROOT, file_path)
-    
-    
+
     @staticmethod
     def file_exists(file_path: str) -> bool:
         """
@@ -688,7 +855,6 @@ class FileManager:
         """
         full_path = FileManager.get_file_full_path(file_path)
         return os.path.exists(full_path)
-    
 
     @staticmethod
     def get_temp_path(operation_id: str, filename: str) -> Tuple[str, str]:
@@ -711,7 +877,6 @@ class FileManager:
         full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
         
         return relative_path, full_path
-    
 
     @staticmethod
     def ensure_temp_directory(operation_id: str) -> str:
@@ -732,7 +897,6 @@ class FileManager:
         
         os.makedirs(temp_dir, exist_ok=True)
         return temp_dir
-    
 
     @staticmethod
     def cleanup_temp_directory(operation_id: str) -> bool:
@@ -760,7 +924,82 @@ class FileManager:
                 return False
         
         return True
-    
+
+    @staticmethod
+    def cleanup_expired_files(dry_run: bool = False) -> dict:
+        """
+        Clean up files for expired operations.
+        
+        This method is called periodically (e.g., via cron job)
+        to remove files for operations that have expired.
+        
+        Args:
+            dry_run: If True, only report what would be deleted
+            
+        Returns:
+            Dictionary with cleanup statistics:
+            - operations_cleaned: Number of operations processed
+            - files_deleted: Number of file directories deleted
+            - bytes_freed: Estimated bytes freed
+            - errors: List of any errors encountered
+        """
+        from ..models import Operation
+
+        stats = {
+            "operations_cleaned": 0,
+            "files_deleted": 0,
+            "bytes_freed": 0,
+            "errors": [],
+        }
+
+        # Find expired operations that haven't been soft-deleted
+        expired_operations = Operation.objects.filter(
+            expires_at__lt=timezone.now(),
+            is_deleted=False,
+        ).prefetch_related('files')
+
+        for operation in expired_operations:
+            try:
+                # Calculate storage used before deletion
+                bytes_used = FileManager._calculate_operation_storage(operation)
+
+                if not dry_run:
+                    # Collect Cloudinary file info for deletion
+                    cloudinary_files = []
+                    for file_record in operation.files.all():
+                        if file_record.cloudinary_public_id:
+                            cloudinary_files.append({
+                                'public_id': file_record.cloudinary_public_id,
+                                'resource_type': file_record.cloudinary_resource_type or 'auto',
+                            })
+                    
+                    # Delete files
+                    deleted = FileManager.delete_operation_files(
+                        operation_id=str(operation.id),
+                        session_key=operation.session_key or "anonymous",
+                        cloudinary_files=cloudinary_files,
+                    )
+
+                    # Mark operation as deleted
+                    operation.is_deleted = True
+                    operation.save(update_fields=['is_deleted'])
+
+                    stats["files_deleted"] += deleted
+
+                stats["operations_cleaned"] += 1
+                stats["bytes_freed"] += bytes_used
+            
+            except Exception as e:
+                error_msg = f"Error cleaning operation {operation.id}: {str(e)}"
+                logger.error(error_msg)
+                stats["errors"].append(error_msg)
+        
+        logger.info(
+            f"Cleanup complete: {stats['operations_cleaned']} operations, "
+            f"{stats['bytes_freed'] / (1024*1024):.2f} MB freed"
+        )
+
+        return stats
 
     @staticmethod
     def _get_max_file_size(media_type: str) -> int:
@@ -782,7 +1021,6 @@ class FileManager:
         }
         
         return max_sizes.get(media_type, defaults.get(media_type, 52428800))
-    
 
     @staticmethod
     def _get_supported_formats(media_type: str) -> list:
@@ -804,7 +1042,6 @@ class FileManager:
         }
         
         return supported.get(media_type, defaults.get(media_type, []))
-    
 
     @staticmethod
     def _calculate_operation_storage(operation) -> int:

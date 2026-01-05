@@ -6,8 +6,9 @@ RQ Worker functions for processing media operations.
 This module provides the entry point for Redis Queue (RQ) workers
 to process media operations. It handles:
 - Fetching operation details from the database
+- Downloading input files from Cloudinary (when enabled)
 - Executing the appropriate processor
-- Moving output files to permanent storage
+- Uploading output files to Cloudinary (when enabled)
 - Updating operation status
 - Error handling and classification
 - Cleanup of temporary files
@@ -62,6 +63,28 @@ class InputFileNotFoundError(WorkerError):
         )
 
 
+class CloudinaryDownloadError(WorkerError):
+    """Raised when downloading from Cloudinary fails."""
+    
+    def __init__(self, operation_id: str, public_id: str, reason: str):
+        super().__init__(
+            message=f"Failed to download input file from Cloudinary for operation {operation_id}: {reason}",
+            is_retryable=True,  # Cloudinary errors are usually temporary
+            error_code="CLOUDINARY_DOWNLOAD_ERROR",
+        )
+
+
+class CloudinaryUploadError(WorkerError):
+    """Raised when uploading to Cloudinary fails."""
+    
+    def __init__(self, operation_id: str, filename: str, reason: str):
+        super().__init__(
+            message=f"Failed to upload output file to Cloudinary for operation {operation_id}: {reason}",
+            is_retryable=True,  # Cloudinary errors are usually temporary
+            error_code="CLOUDINARY_UPLOAD_ERROR",
+        )
+
+
 class ProcessingFailedError(WorkerError):
     """Raised when processing fails."""
     
@@ -71,6 +94,11 @@ class ProcessingFailedError(WorkerError):
             is_retryable=is_retryable,
             error_code="PROCESSING_FAILED",
         )
+
+
+def _use_cloudinary() -> bool:
+    """Check if Cloudinary storage is enabled."""
+    return getattr(settings, 'USE_CLOUDINARY', False)
 
 
 def create_worker_progress_callback(operation_id: str):
@@ -115,11 +143,99 @@ def create_worker_progress_callback(operation_id: str):
     )
     
     # Return a simple callable that uses the throttled callback
-    # ThrottledProgressCallback implements __call__, so its being called directly
     def progress_callback(percent: int, eta_seconds: Optional[float] = None) -> None:
         throttled_callback(percent, eta_seconds)
     
     return progress_callback
+
+
+def _get_input_file_path(operation_id: str, input_file, temp_dir: str) -> str:
+    """
+    Get the local path to the input file, downloading from Cloudinary if needed.
+    
+    Args:
+        operation_id: UUID string of the operation
+        input_file: File model instance
+        temp_dir: Temporary directory for downloads
+        
+    Returns:
+        Local path to the input file
+        
+    Raises:
+        InputFileNotFoundError: If file cannot be found
+        CloudinaryDownloadError: If Cloudinary download fails
+    """
+    from apps.operations.services.file_manager import FileManager
+    
+    # Check if file is stored in Cloudinary
+    if input_file.cloudinary_public_id:
+        logger.info(
+            f"Downloading input file from Cloudinary for operation {operation_id}: "
+            f"{input_file.cloudinary_public_id}"
+        )
+        
+        try:
+            # Download from Cloudinary to temp directory
+            local_path = FileManager.download_from_cloudinary(
+                public_id=input_file.cloudinary_public_id,
+                resource_type=input_file.cloudinary_resource_type or 'auto',
+                destination_dir=temp_dir,
+            )
+            
+            logger.info(
+                f"Downloaded input file from Cloudinary: {input_file.cloudinary_public_id} "
+                f"-> {local_path}"
+            )
+            
+            return local_path
+            
+        except Exception as e:
+            logger.error(f"Failed to download from Cloudinary: {e}")
+            raise CloudinaryDownloadError(
+                operation_id=operation_id,
+                public_id=input_file.cloudinary_public_id,
+                reason=str(e),
+            )
+    
+    # Local storage: construct path from MEDIA_ROOT
+    if input_file.file_path:
+        input_path = os.path.join(settings.MEDIA_ROOT, input_file.file_path)
+        
+        if os.path.exists(input_path):
+            return input_path
+        
+        raise InputFileNotFoundError(operation_id, input_path)
+    
+    # No valid file path
+    raise InputFileNotFoundError(operation_id, "No file path or Cloudinary ID found")
+
+
+def _get_media_type_from_file(input_file) -> str:
+    """
+    Determine the media type from the input file.
+    
+    Args:
+        input_file: File model instance
+        
+    Returns:
+        Media type string: 'video', 'image', or 'audio'
+    """
+    mime_type = input_file.mime_type or ''
+    
+    if mime_type.startswith('video/'):
+        return 'video'
+    elif mime_type.startswith('image/'):
+        return 'image'
+    elif mime_type.startswith('audio/'):
+        return 'audio'
+    
+    # Try to get from metadata
+    metadata = input_file.metadata or {}
+    if 'media_type' in metadata:
+        return metadata['media_type']
+    
+    # Default to video for unknown types
+    return 'video'
 
 
 def process_operation(operation_id: str) -> Dict[str, Any]:
@@ -130,11 +246,12 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
     It handles the complete processing lifecycle:
     1. Fetch operation from database
     2. Update status to PROCESSING
-    3. Get the appropriate processor from registry
-    4. Execute the processor with progress tracking
-    5. Move output to permanent storage
-    6. Update operation status to COMPLETED or FAILED
-    7. Cleanup temporary files
+    3. Download input file from Cloudinary (if using cloud storage)
+    4. Get the appropriate processor from registry
+    5. Execute the processor with progress tracking
+    6. Upload output to Cloudinary (if using cloud storage)
+    7. Update operation status to COMPLETED or FAILED
+    8. Cleanup temporary files
     
     Args:
         operation_id: UUID string of the operation to process
@@ -159,6 +276,8 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
 
     operation = None
     temp_output_path = None
+    temp_dir = None
+    downloaded_input_path = None
 
     try:
         # Fetch operation from database
@@ -181,7 +300,7 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
             f"(operation={operation.operation})"
         )
 
-        # Get input file
+        # Get input file record
         try:
             input_file = File.objects.get(
                 operation=operation,
@@ -190,9 +309,21 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
         except File.DoesNotExist:
             raise InputFileNotFoundError(operation_id, "No input file found")
         
-        # Construct input file path
-        input_path = os.path.join(settings.MEDIA_ROOT, input_file.file_path)
-
+        # Ensure temp directory exists for this operation
+        temp_dir = FileManager.ensure_temp_directory(operation_id)
+        
+        # Get input file path (downloads from Cloudinary if needed)
+        input_path = _get_input_file_path(
+            operation_id=operation_id,
+            input_file=input_file,
+            temp_dir=temp_dir,
+        )
+        
+        # Track if we downloaded the input (for cleanup)
+        if input_file.cloudinary_public_id:
+            downloaded_input_path = input_path
+        
+        # Verify file exists
         if not os.path.exists(input_path):
             raise InputFileNotFoundError(operation_id, input_path)
         
@@ -226,53 +357,65 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
         if result.success:
             temp_output_path = result.output_path
 
-            # Move output to permanent storage
+            # Move/upload output to permanent storage
             if temp_output_path and os.path.exists(temp_output_path):
-                output_info = FileManager.move_to_output(
-                    temp_path=temp_output_path,
-                    operation_id=operation_id,
-                    session_key=operation.session_key or "anonymous",
-                    output_filename=result.output_filename,
-                )
+                # Determine media type for Cloudinary resource type
+                media_type = _get_media_type_from_file(input_file)
+                
+                try:
+                    output_info = FileManager.move_to_output(
+                        temp_path=temp_output_path,
+                        operation_id=operation_id,
+                        session_key=operation.session_key or "anonymous",
+                        output_filename=result.output_filename,
+                        media_type=media_type,
+                    )
+                except Exception as e:
+                    if _use_cloudinary():
+                        raise CloudinaryUploadError(
+                            operation_id=operation_id,
+                            filename=result.output_filename,
+                            reason=str(e),
+                        )
+                    raise
 
-                # Create output file record
+                # Create output file record with Cloudinary fields
                 File.objects.create(
                     operation=operation,
                     file_type=FileType.OUTPUT,
-                    file_path=output_info['file_path'],
+                    file_path=output_info.get('file_path', ''),
                     file_name=output_info['file_name'],
                     file_size=output_info['file_size'],
                     mime_type=output_info['mime_type'],
+                    cloudinary_public_id=output_info.get('cloudinary_public_id', ''),
+                    cloudinary_url=output_info.get('cloudinary_url', ''),
+                    cloudinary_resource_type=output_info.get('cloudinary_resource_type', ''),
                     metadata=result.metadata,
                 )
 
                 # Mark as complete
                 complete_operation(
                     operation=operation,
-                    output_path=output_info['file_path'],
+                    output_path=output_info.get('file_path') or output_info.get('cloudinary_public_id', ''),
                     metadata=result.metadata,
                 )
 
                 logger.info(
                     f"Operation {operation_id} completed successfully "
                     f"(output={output_info['file_name']}, "
-                    f"size={output_info['file_size']} bytes)"
+                    f"size={output_info['file_size']} bytes, "
+                    f"storage={'cloudinary' if output_info.get('cloudinary_public_id') else 'local'})"
                 )
 
-                # Clean up temp directory after successful move
-                temp_dir = os.path.dirname(temp_output_path)
-                if temp_dir and os.path.exists(temp_dir) and 'temp' in temp_dir:
-                    try:
-                        shutil.rmtree(temp_dir)
-                        logger.debug(f"Cleaned up temp directory: {temp_dir}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up temp directory: {cleanup_error}")
+                # Clean up temp directory after successful processing
+                _cleanup_temp_files(temp_dir, downloaded_input_path, temp_output_path)
 
                 return {
                     "success": True,
                     "operation_id": operation_id,
-                    "output_path": output_info['file_path'],
+                    "output_path": output_info.get('file_path') or output_info.get('cloudinary_url', ''),
                     "processing_time": result.processing_time_seconds,
+                    "storage": "cloudinary" if output_info.get('cloudinary_public_id') else "local",
                 }
             else:
                 raise ProcessingFailedError(
@@ -295,6 +438,8 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
                 is_retryable=e.is_retryable,
                 error_code=e.error_code,
             )
+        # Clean up on failure
+        _cleanup_temp_files(temp_dir, downloaded_input_path, temp_output_path)
         raise
     
     except Exception as e:
@@ -316,10 +461,46 @@ def process_operation(operation_id: str) -> Dict[str, Any]:
                 error_code=error_info['error_code'],
             )
         
+        # Clean up on failure
+        _cleanup_temp_files(temp_dir, downloaded_input_path, temp_output_path)
+        
         raise ProcessingFailedError(
             error_info['user_message'],
             is_retryable=error_info['is_retryable']
         )
+
+
+def _cleanup_temp_files(
+    temp_dir: Optional[str],
+    downloaded_input_path: Optional[str],
+    temp_output_path: Optional[str],
+) -> None:
+    """
+    Clean up temporary files after processing.
+    """
+    # Clean up downloaded input file
+    if downloaded_input_path and os.path.exists(downloaded_input_path):
+        try:
+            os.remove(downloaded_input_path)
+            logger.debug(f"Cleaned up downloaded input: {downloaded_input_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up downloaded input: {e}")
+    
+    # Clean up temp output file (if not already moved)
+    if temp_output_path and os.path.exists(temp_output_path):
+        try:
+            os.remove(temp_output_path)
+            logger.debug(f"Cleaned up temp output: {temp_output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp output: {e}")
+    
+    # Clean up temp directory
+    if temp_dir and os.path.exists(temp_dir) and 'temp' in temp_dir:
+        try:
+            shutil.rmtree(temp_dir)
+            logger.debug(f"Cleaned up temp directory: {temp_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp directory: {e}")
 
 
 def complete_operation(
@@ -332,7 +513,7 @@ def complete_operation(
     
     Args:
         operation: Operation model instance
-        output_path: Path to the output file
+        output_path: Path to the output file (local path or Cloudinary public_id)
         metadata: Optional processing metadata
     """
     from apps.operations.enums import OperationStatus
@@ -413,7 +594,7 @@ def classify_error(error: Exception) -> Dict[str, Any]:
     Classify an error and determine if it's retryable.
     
     Categorizes errors as:
-    - Retryable: Redis errors, disk full, timeouts, temporary network issues
+    - Retryable: Redis errors, disk full, timeouts, temporary network issues, Cloudinary errors
     - Non-retryable: Corrupted files, unsupported codecs, invalid parameters
     
     Args:
@@ -433,6 +614,8 @@ def classify_error(error: Exception) -> Dict[str, Any]:
         'TimeoutError': ('TIMEOUT', 'Operation timed out. Please try again.'),
         'ConnectionError': ('CONNECTION_ERROR', 'Connection error. Please try again.'),
         'MemoryError': ('MEMORY_ERROR', 'Not enough memory. Please try with a smaller file.'),
+        'CloudinaryDownloadError': ('CLOUDINARY_DOWNLOAD_ERROR', 'Failed to download file. Please try again.'),
+        'CloudinaryUploadError': ('CLOUDINARY_UPLOAD_ERROR', 'Failed to upload file. Please try again.'),
         'OSError': None,  # Needs further inspection
         'IOError': None,  # Needs further inspection
     }
@@ -454,6 +637,8 @@ def classify_error(error: Exception) -> Dict[str, Any]:
         ('redis', 'REDIS_ERROR', 'Queue service error. Please try again.'),
         ('timeout', 'TIMEOUT', 'Operation timed out. Please try again.'),
         ('temporary', 'TEMPORARY_ERROR', 'Temporary error. Please try again.'),
+        ('cloudinary', 'CLOUDINARY_ERROR', 'Cloud storage error. Please try again.'),
+        ('network', 'NETWORK_ERROR', 'Network error. Please try again.'),
     ]
     
     for pattern, code, message in retryable_patterns:
@@ -545,27 +730,28 @@ def get_worker_stats() -> Dict[str, Any]:
 
     stats = {
         'operations_processing': Operation.objects.filter(
-            status = OperationStatus.PROCESSING
+            status=OperationStatus.PROCESSING
         ).count(),
         'operations_queued': Operation.objects.filter(
-            status = OperationStatus.QUEUED
+            status=OperationStatus.QUEUED
         ).count(),
         'completed_last_hour': Operation.objects.filter(
-            status = OperationStatus.COMPLETED,
-            completed_at__gte = last_hour
+            status=OperationStatus.COMPLETED,
+            completed_at__gte=last_hour
         ).count(),
         'failed_last_hour': Operation.objects.filter(
-            status = OperationStatus.FAILED,
-            completed_at__gte = last_hour
+            status=OperationStatus.FAILED,
+            completed_at__gte=last_hour
         ).count(),
         'completed_last_day': Operation.objects.filter(
-            status = OperationStatus.COMPLETED,
-            completed_at__gte = last_day
+            status=OperationStatus.COMPLETED,
+            completed_at__gte=last_day
         ).count(),
         'failed_last_day': Operation.objects.filter(
-            status = OperationStatus.FAILED,
-            completed_at__gte = last_day
+            status=OperationStatus.FAILED,
+            completed_at__gte=last_day
         ).count(),
+        'storage_backend': 'cloudinary' if _use_cloudinary() else 'local',
     }
 
     # Calculate success rate
