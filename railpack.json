@@ -1,5 +1,5 @@
 {
   "deploy": {
-    "aptPackages": ["ffmpeg", "x264", "libx264-163"]
+    "aptPackages": ["ffmpeg", "x264"]
   }
 }
