@@ -1,5 +1,5 @@
 {
   "deploy": {
-    "aptPackages": ["ffmpeg"]
+    "aptPackages": ["ffmpeg", "libx264-dev", "libx265-dev", "libvpx-dev", "libmp3lame-dev", "libopus-dev"]
   }
 }
