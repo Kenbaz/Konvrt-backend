@@ -1,5 +1,5 @@
 {
   "deploy": {
-    "aptPackages": ["ffmpeg-full", "libavcodec-extra"]
+    "aptPackages": ["ffmpeg", "libavcodec-extra"]
   }
 }
