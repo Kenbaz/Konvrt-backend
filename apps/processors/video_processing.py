@@ -155,6 +155,9 @@ class VideoCompressProcessor(VideoProcessor):
         
         # Check FFmpeg result
         if not result.success:
+            logger.error(f"FFmpeg failed with return code {result.return_code}")
+            logger.error(f"FFmpeg stderr (raw): {result.stderr}")
+            logger.error(f"FFmpeg stdout: {result.stdout}")
             error_msg = self._parse_ffmpeg_error(result.stderr)
             error_category = self._categorize_ffmpeg_error(result.stderr)
             return self._create_error_result(
@@ -213,7 +216,7 @@ class VideoCompressProcessor(VideoProcessor):
             return "Input file not found or inaccessible"
         elif 'invalid data' in stderr_lower or 'corrupt' in stderr_lower:
             return "Input video file appears to be corrupted"
-        elif 'codec not found' in stderr_lower or 'encoder' in stderr_lower:
+        elif 'codec not found' in stderr_lower or 'unknown encoder' in stderr_lower or 'encoder not found' in stderr_lower:
             return "Required video codec is not available"
         elif 'permission denied' in stderr_lower:
             return "Permission denied when accessing files"
