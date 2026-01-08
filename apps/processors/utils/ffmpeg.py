@@ -756,9 +756,11 @@ class FFmpegWrapper:
             '-c:v', 'libx264',
             '-crf', str(quality),
             '-preset', preset,
+            '-threads', '2',
             '-c:a', 'aac',
             '-b:a', audio_bitrate,
             '-movflags', '+faststart',
+            '-max_muxing_queue_size', '1024',
             '-y', # Overwrite output
             output_path
         ]
