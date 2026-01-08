@@ -19,6 +19,7 @@ import os
 import shutil
 import traceback
 from datetime import timedelta
+import subprocess
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
@@ -99,6 +100,18 @@ class ProcessingFailedError(WorkerError):
 def _use_cloudinary() -> bool:
     """Check if Cloudinary storage is enabled."""
     return getattr(settings, 'USE_CLOUDINARY', False)
+
+
+def check_ffmpeg_on_startup():
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=10)
+        logger.info(f"FFmpeg version info:\n{result.stdout[:500]}")
+        
+        result2 = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=10)
+        has_libx264 = 'libx264' in result2.stdout
+        logger.info(f"libx264 encoder available: {has_libx264}")
+    except Exception as e:
+        logger.error(f"FFmpeg check failed: {e}")
 
 
 def create_worker_progress_callback(operation_id: str):

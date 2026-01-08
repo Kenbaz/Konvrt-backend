@@ -1,6 +1,7 @@
 # apps/processors/apps.py
 
 from django.apps import AppConfig
+from rq_workers import check_ffmpeg_on_startup
 
 
 class ProcessorsConfig(AppConfig):
@@ -18,3 +19,6 @@ class ProcessorsConfig(AppConfig):
         from . import video_processing  # noqa: F401
         from . import image_processing  # noqa: F401
         from . import audio_processing  # noqa: F401
+
+        # Check FFmpeg availability on startup
+        check_ffmpeg_on_startup()
