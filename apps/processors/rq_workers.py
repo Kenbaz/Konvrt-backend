@@ -816,3 +816,6 @@ def cleanup_stale_operations(timeout_minutes: int = 60) -> int:
         logger.info(f"Cleaned up {count} stale operations")
     
     return count
+
+
+check_ffmpeg_on_startup()
