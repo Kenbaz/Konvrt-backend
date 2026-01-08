@@ -12,11 +12,12 @@ import time
 from typing import Callable
 
 from django.http import HttpRequest, HttpResponse
-from django.contrib.sessions.models import Session
+from django.contrib.sessions.backends.db import SessionStore
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+# Custom header name for session ID (used for Safari/iOS compatibility)
 SESSION_HEADER_NAME = 'X-Session-ID'
 
 
@@ -66,17 +67,23 @@ class SessionMiddleware:
         )
         
         if header_session_id:
-            try:
-                session = Session.objects.get(
-                    session_key=header_session_id,
-                    expire_date__gt=timezone.now()
-                )
-                request.session._session_key = header_session_id
-                request.session.modified = False
-                logger.debug(f"Loaded session from header: {header_session_id[:8]}...")
-                return
-            except Session.DoesNotExist:
-                logger.debug(f"Header session invalid/expired: {header_session_id[:8]}...")
+            session_store = SessionStore(session_key=header_session_id)
+            
+            if session_store.exists(header_session_id):
+                try:
+                    session_data = session_store.load()
+                    
+                    expiry_age = session_store.get_expiry_age()
+                    if expiry_age > 0:
+                        request.session = session_store
+                        logger.debug(f"Loaded session from header: {header_session_id[:8]}...")
+                        return
+                    else:
+                        logger.debug(f"Header session expired: {header_session_id[:8]}...")
+                except Exception as e:
+                    logger.debug(f"Error loading header session {header_session_id[:8]}...: {e}")
+            else:
+                logger.debug(f"Header session does not exist: {header_session_id[:8]}...")
         
         # Fall back to cookie session or create new one
         if not request.session.session_key:
