@@ -14,6 +14,7 @@ executed through the worker system.
 import logging
 import os
 from typing import Any, Callable, Dict, Optional
+from unittest import result
 from uuid import UUID
 
 from .base_processor import ProcessingResult, VideoProcessor, ErrorCategory
@@ -156,15 +157,8 @@ class VideoCompressProcessor(VideoProcessor):
         # Check FFmpeg result
         if not result.success:
             logger.error(f"FFmpeg failed with return code: {result.return_code}")
-            logger.error(f"FFmpeg stderr (raw): {result.stderr[-2000:]}")  # Last 2000 chars
-            logger.error(f"FFmpeg stdout (last 500): {result.stdout[-500:]}")
+            logger.error(f"FFmpeg stderr (raw): {result.stderr[-2000:]}")
             
-            # Check if output file exists anyway
-            import os
-            if output_path:
-                file_exists = os.path.exists(output_path)
-                file_size = os.path.getsize(output_path) if file_exists else 0
-                logger.error(f"Output file exists: {file_exists}, size: {file_size} bytes")
             error_msg = self._parse_ffmpeg_error(result.stderr)
             error_category = self._categorize_ffmpeg_error(result.stderr)
             return self._create_error_result(
@@ -207,66 +201,177 @@ class VideoCompressProcessor(VideoProcessor):
         )
     
 
-    def _parse_ffmpeg_error(self, stderr: str) -> str:
+    def _parse_ffmpeg_error(self, stderr: str, return_code: int = None) -> str:
         """
         Parse FFmpeg stderr to extract a user-friendly error message.
         
         Args:
             stderr: FFmpeg stderr output
+            return_code: FFmpeg process return code (optional, for signal detection)
             
         Returns:
             User-friendly error message
         """
         stderr_lower = stderr.lower()
         
-        if 'no such file' in stderr_lower:
+        # Check return code first for signal-based termination
+        if return_code is not None:
+            if return_code == -9:  # SIGKILL - usually OOM
+                return "Process was killed (likely out of memory). Try a smaller file or lower quality settings."
+            elif return_code == -15:  # SIGTERM
+                return "Process was terminated unexpectedly"
+            elif return_code == -6:  # SIGABRT
+                return "Process aborted due to internal error"
+        
+        # File/path errors
+        if 'no such file' in stderr_lower or 'does not exist' in stderr_lower:
             return "Input file not found or inaccessible"
-        elif 'invalid data' in stderr_lower or 'corrupt' in stderr_lower:
+        
+        # Input file errors
+        if 'invalid data' in stderr_lower:
+            return "Input video file contains invalid data"
+        if 'corrupt' in stderr_lower:
             return "Input video file appears to be corrupted"
-        elif 'codec not found' in stderr_lower or 'unknown encoder' in stderr_lower:
-            return "Required video codec is not available"
-        elif 'permission denied' in stderr_lower:
+        if 'moov atom not found' in stderr_lower:
+            return "Video file is incomplete or corrupted (missing moov atom)"
+        if 'invalid nal unit' in stderr_lower or 'non-existing pps' in stderr_lower:
+            return "Video stream is corrupted or uses unsupported features"
+        
+        # Codec errors
+        if 'unknown encoder' in stderr_lower:
+            return "Required video encoder is not available"
+        if 'encoder not found' in stderr_lower:
+            return "Required video encoder is not available"
+        if 'codec not found' in stderr_lower:
+            return "Required codec is not available"
+        if 'unknown decoder' in stderr_lower:
+            return "Cannot decode input video format"
+        if 'decoder not found' in stderr_lower:
+            return "Cannot decode input video format"
+        if 'unsupported codec' in stderr_lower:
+            return "Input video uses an unsupported codec"
+        
+        # Permission errors
+        if 'permission denied' in stderr_lower:
             return "Permission denied when accessing files"
-        elif 'no space left' in stderr_lower:
+        if 'read-only file system' in stderr_lower:
+            return "Cannot write output file (read-only filesystem)"
+        
+        # Resource errors
+        if 'no space left' in stderr_lower:
             return "Not enough disk space for output file"
-        elif 'out of memory' in stderr_lower:
+        if 'out of memory' in stderr_lower or 'cannot allocate' in stderr_lower:
             return "Not enough memory to process video"
-        else:
-            # Return last meaningful line from stderr
-            lines = [l.strip() for l in stderr.split('\n') if l.strip()]
-            if lines:
-                return f"Video compression failed: {lines[-1][:200]}"
-            return "Video compression failed with unknown error"
-    
+        if 'resource temporarily unavailable' in stderr_lower:
+            return "System resources temporarily unavailable"
+        
+        # Format/stream errors
+        if 'invalid argument' in stderr_lower:
+            return "Invalid processing parameters"
+        if 'could not find stream' in stderr_lower:
+            return "No valid video stream found in input file"
+        if 'no video stream' in stderr_lower:
+            return "Input file does not contain a video stream"
+        if 'error while decoding' in stderr_lower:
+            return "Error while decoding input video"
+        if 'error while encoding' in stderr_lower:
+            return "Error while encoding output video"
+        
+        # Network errors (for URL inputs)
+        if 'connection refused' in stderr_lower or 'connection timed out' in stderr_lower:
+            return "Network connection error"
+        
+        error_patterns = [
+            'error:',
+            'fatal:',
+            'failed',
+            'cannot',
+            'unable to',
+            'invalid',
+        ]
+        
+        lines = stderr.split('\n')
+        for line in reversed(lines):
+            line_lower = line.lower().strip()
+            if any(pattern in line_lower for pattern in error_patterns):
+                # Skip lines that are just informational
+                if 'press [q]' in line_lower:
+                    continue
+                if line_lower.startswith('frame=') or line_lower.startswith('size='):
+                    continue
+                clean_line = line.strip()
+                if len(clean_line) > 10: 
+                    return f"FFmpeg error: {clean_line[:200]}"
+        
+        meaningful_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith('frame=')]
+        if meaningful_lines:
+            last_line = meaningful_lines[-1][:200]
+            return f"Video processing failed: {last_line}"
+        
+        return "Video processing failed with unknown error"
 
-    def _categorize_ffmpeg_error(self, stderr: str) -> ErrorCategory:
+
+    def _categorize_ffmpeg_error(self, stderr: str, return_code: int = None) -> ErrorCategory:
         """
         Categorize FFmpeg error for retry logic.
         
         Args:
             stderr: FFmpeg stderr output
+            return_code: FFmpeg process return code (optional)
             
         Returns:
             ErrorCategory
         """
         stderr_lower = stderr.lower()
         
+        # Signal-based termination (often retryable with different settings)
+        if return_code is not None:
+            if return_code == -9:  # SIGKILL - OOM, potentially retryable
+                return ErrorCategory.RESOURCE
+            elif return_code == -15:  # SIGTERM
+                return ErrorCategory.TEMPORARY
+        
+        # Resource errors - potentially retryable
         if 'no space left' in stderr_lower:
             return ErrorCategory.RESOURCE
-        elif 'out of memory' in stderr_lower:
+        if 'out of memory' in stderr_lower or 'cannot allocate' in stderr_lower:
             return ErrorCategory.RESOURCE
-        elif 'timeout' in stderr_lower:
+        if 'resource temporarily unavailable' in stderr_lower:
+            return ErrorCategory.TEMPORARY
+        
+        # Timeout errors
+        if 'timeout' in stderr_lower or 'timed out' in stderr_lower:
             return ErrorCategory.TIMEOUT
-        elif 'invalid data' in stderr_lower or 'corrupt' in stderr_lower:
+        
+        # Input file errors - not retryable
+        if 'invalid data' in stderr_lower or 'corrupt' in stderr_lower:
             return ErrorCategory.INVALID_INPUT
-        elif 'codec not found' in stderr_lower:
+        if 'moov atom not found' in stderr_lower:
+            return ErrorCategory.INVALID_INPUT
+        if 'invalid nal unit' in stderr_lower:
+            return ErrorCategory.INVALID_INPUT
+        
+        # Codec errors - not retryable
+        if 'unknown encoder' in stderr_lower or 'encoder not found' in stderr_lower:
             return ErrorCategory.CODEC_ERROR
-        elif 'permission denied' in stderr_lower:
+        if 'codec not found' in stderr_lower:
+            return ErrorCategory.CODEC_ERROR
+        if 'unknown decoder' in stderr_lower or 'decoder not found' in stderr_lower:
+            return ErrorCategory.CODEC_ERROR
+        
+        # Permission errors - not retryable
+        if 'permission denied' in stderr_lower:
             return ErrorCategory.PERMISSION
-        elif 'no such file' in stderr_lower:
+        
+        # File not found - not retryable
+        if 'no such file' in stderr_lower or 'does not exist' in stderr_lower:
             return ErrorCategory.NOT_FOUND
-        else:
-            return ErrorCategory.UNKNOWN
+        
+        # Network errors - potentially retryable
+        if 'connection refused' in stderr_lower or 'connection timed out' in stderr_lower:
+            return ErrorCategory.TEMPORARY
+        
+        return ErrorCategory.UNKNOWN
 
 
 class VideoConvertProcessor(VideoProcessor):
