@@ -516,7 +516,8 @@ class CloudinaryStorageService:
     def download_file(
         public_id: str,
         resource_type: str,
-        destination_dir: Optional[str] = None
+        destination_dir: Optional[str] = None,
+        filename: Optional[str] = None
     ) -> CloudinaryDownloadResult:
         """Download a file from cloudinary to local storage"""
 
@@ -557,8 +558,11 @@ class CloudinaryStorageService:
             # Create destination path
             if destination_dir:
                 os.makedirs(destination_dir, exist_ok=True)
-                filename = os.path.basename(public_id) + extension
-                local_path = os.path.join(destination_dir, filename)
+                if filename:
+                    local_path = os.path.join(destination_dir, filename)
+                else:
+                    generated_filename = os.path.basename(public_id) + extension
+                    local_path = os.path.join(destination_dir, generated_filename)
             else:
                 # Use temp file
                 fd, local_path = tempfile.mkstemp(suffix=extension)

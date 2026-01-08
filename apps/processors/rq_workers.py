@@ -181,6 +181,7 @@ def _get_input_file_path(operation_id: str, input_file, temp_dir: str) -> str:
                 public_id=input_file.cloudinary_public_id,
                 resource_type=input_file.cloudinary_resource_type or 'auto',
                 destination_dir=temp_dir,
+                filename=input_file.file_name
             )
             
             logger.info(

@@ -338,6 +338,10 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-session-id',
+]
+CORS_EXPOSE_HEADERS = [
+    'x-session-id',
 ]
 
 # FFmpeg Configuration
@@ -350,7 +354,6 @@ SESSION_COOKIE_AGE = 86400  # 24 hours
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'None'
-SESSION_COOKIE_SECURE = True
 
 # API-specific settings
 API_VERSION = 'v1'

@@ -564,6 +564,7 @@ class FileManager:
         public_id: str,
         resource_type: str,
         destination_dir: Optional[str] = None,
+        filename: Optional[str] = None,
     ) -> str:
         """
         Download a file from Cloudinary to local storage.
@@ -575,6 +576,7 @@ class FileManager:
                 public_id=public_id,
                 resource_type=resource_type,
                 destination_dir=destination_dir,
+                filename=filename
             )
             
             logger.info(

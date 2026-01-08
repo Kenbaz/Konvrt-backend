@@ -1,25 +1,24 @@
 # apps/api/utils.py
 
 """
-Utility functions for the API layer.
+API utility functions for the media processing platform.
 
-This module provides helper functions for creating standardized API responses,
-handling sessions, and other common API operations.
+This module provides common utility functions for API responses,
+session management, and other API-related operations.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from django.http import HttpRequest
 from rest_framework import status
-from urllib.parse import quote
 from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
 
 
 def success_response(
-    data: Optional[Union[Dict, List, Any]] = None,
+    data: Any = None,
     message: Optional[str] = None,
     status_code: int = status.HTTP_200_OK,
     metadata: Optional[Dict[str, Any]] = None,
@@ -28,18 +27,18 @@ def success_response(
     Create a standardized success response.
     
     Args:
-        data: The response data (can be dict, list, or any serializable value)
+        data: Response data
         message: Optional success message
-        status_code: HTTP status code (default 200)
-        metadata: Optional metadata (pagination info, etc.)
+        status_code: HTTP status code
+        metadata: Optional additional metadata
         
     Returns:
-        Response object with standardized success format
+        DRF Response object
     """
-    response_data = {
-        "success": True
+    response_data: Dict[str, Any] = {
+        "success": True,
     }
-
+    
     if data is not None:
         response_data["data"] = data
     
@@ -47,7 +46,7 @@ def success_response(
         response_data["message"] = message
     
     if metadata:
-        response_data["metadata"] = metadata
+        response_data.update(metadata)
     
     return Response(response_data, status=status_code)
 
@@ -56,41 +55,36 @@ def error_response(
     message: str,
     code: str = "ERROR",
     status_code: int = status.HTTP_400_BAD_REQUEST,
-    details: Optional[Dict[str, Any]] = None,
     errors: Optional[List[Dict[str, Any]]] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    details: Optional[Dict[str, Any]] = None,
 ) -> Response:
     """
     Create a standardized error response.
     
     Args:
-        message: Human-readable error message
-        code: Machine-readable error code
-        status_code: HTTP status code (default 400)
-        details: Additional error details
-        errors: List of specific errors (for validation)
-        metadata: Optional metadata
+        message: Error message
+        code: Error code for client handling
+        status_code: HTTP status code
+        errors: Optional list of field-specific errors
+        details: Optional additional error details
         
     Returns:
-        Response object with standardized error format
+        DRF Response object
     """
-    response_data = {
+    response_data: Dict[str, Any] = {
         "success": False,
         "error": {
             "message": message,
             "code": code,
-        }
+        },
     }
-
-    if details:
-        response_data["error"]["details"] = details
-
+    
     if errors:
         response_data["error"]["errors"] = errors
-
-    if metadata:
-        response_data["metadata"] = metadata
-
+    
+    if details:
+        response_data["error"]["details"] = details
+    
     return Response(response_data, status=status_code)
 
 
@@ -138,10 +132,15 @@ def paginated_response(
 
 def get_session_key(request: HttpRequest) -> str:
     """
-    Get or create a session key for the request.
+    Get the session key for the request.
     
-    This ensures every request has a valid session key for tracking
-    anonymous users and their operations.
+    The SessionMiddleware in apps.core.middleware handles:
+    1. Loading session from X-Session-ID header
+    2. Falling back to cookie-based session
+    3. Creating a new session if needed
+    
+    This function simply returns the session key that the middleware
+    has already set up.
     
     Args:
         request: The HTTP request object
@@ -149,9 +148,9 @@ def get_session_key(request: HttpRequest) -> str:
     Returns:
         The session key as a string
     """
-    # Ensure session exists
     if not request.session.session_key:
         request.session.create()
+        logger.warning("Session not initialized by middleware, creating new one")
     
     return request.session.session_key
 
@@ -208,9 +207,7 @@ def format_duration(seconds: float) -> str:
     Returns:
         Human-readable duration string (e.g., "2m 30s")
     """
-    if seconds < 1:
-        return f"{seconds * 1000:.0f}ms"
-    elif seconds < 60:
+    if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
         minutes = int(seconds // 60)
@@ -222,169 +219,35 @@ def format_duration(seconds: float) -> str:
         return f"{hours}h {minutes}m"
 
 
-def sanitize_filename_for_response(filename: str) -> str:
-    """
-    Sanitize a filename for use in Content-Disposition header.
-    
-    Args:
-        filename: Original filename
-        
-    Returns:
-        Sanitized filename safe for HTTP headers
-    """
-    # Remove any path components
-    filename = filename.replace("/", "_").replace("\\", "_")
-    
-    # Remove any characters that might cause issues in headers
-    safe_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    sanitized = "".join(c if c in safe_chars else "_" for c in filename)
-    
-    # Ensure it's not empty and doesn't start with a dot
-    if not sanitized or sanitized.startswith("."):
-        sanitized = "file" + sanitized
-    
-    return sanitized
-
-
 def build_download_headers(
     filename: str,
+    content_type: str,
     file_size: Optional[int] = None,
-    content_type: Optional[str] = None,
     inline: bool = False,
 ) -> Dict[str, str]:
     """
-    Build HTTP headers for file download responses.
-    
-    Creates proper Content-Disposition header with both ASCII and UTF-8
-    encoded filename for maximum browser compatibility.
+    Build HTTP headers for file download response.
     
     Args:
-        filename: The filename to suggest for download
-        file_size: Optional file size in bytes
-        content_type: Optional MIME type
-        inline: If True, suggest inline display instead of download
+        filename: Name of the file for Content-Disposition
+        content_type: MIME type of the file
+        file_size: Optional file size for Content-Length
+        inline: If True, display in browser; if False, force download
         
     Returns:
         Dictionary of HTTP headers
     """
-    headers = {}
+    disposition = "inline" if inline else "attachment"
     
-    # Sanitize filename for header
-    safe_filename = sanitize_filename_for_header(filename)
-    
-    # Build Content-Disposition header
-    disposition_type = "inline" if inline else "attachment"
-    
-    ascii_filename = safe_filename.encode('ascii', 'replace').decode('ascii')
-    utf8_filename = quote(filename, safe='')
-    
-    content_disposition = f'{disposition_type}; filename="{ascii_filename}"; filename*=UTF-8\'\'{utf8_filename}'
-    headers['Content-Disposition'] = content_disposition
+    headers = {
+        "Content-Type": content_type,
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "Cache-Control": "private, no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
     
     if file_size is not None:
-        headers['Content-Length'] = str(file_size)
-    
-    if content_type:
-        headers['Content-Type'] = content_type
-    
-    headers['Cache-Control'] = 'private, no-cache, no-store, must-revalidate'
-    headers['Pragma'] = 'no-cache'
-    headers['Expires'] = '0'
-    
-    headers['Access-Control-Expose-Headers'] = 'Content-Disposition, Content-Length, Content-Type'
+        headers["Content-Length"] = str(file_size)
     
     return headers
-
-
-def sanitize_filename_for_header(filename: str) -> str:
-    """
-    Sanitize a filename for use in HTTP headers.
-    
-    Removes or replaces characters that could cause issues in
-    Content-Disposition headers.
-    
-    Args:
-        filename: The original filename
-        
-    Returns:
-        Sanitized filename
-    """
-    if not filename:
-        return "download"
-    
-    sanitized = filename
-    
-    # Replace backslashes and forward slashes
-    sanitized = sanitized.replace('\\', '_').replace('/', '_')
-    
-    # Replace quotes
-    sanitized = sanitized.replace('"', "'").replace('\n', '').replace('\r', '')
-    
-    # Remove control characters
-    sanitized = ''.join(char for char in sanitized if ord(char) >= 32)
-    
-    if not sanitized or sanitized.strip() == '':
-        return "download"
-    
-    return sanitized.strip()
-
-
-def parse_boolean_param(value: Any, default: bool = False) -> bool:
-    """
-    Parse a boolean parameter from query string or request data.
-    
-    Args:
-        value: The value to parse
-        default: Default value if parsing fails
-        
-    Returns:
-        Boolean value
-    """
-    if value is None:
-        return default
-    
-    if isinstance(value, bool):
-        return value
-    
-    if isinstance(value, str):
-        return value.lower() in ("true", "1", "yes", "on")
-    
-    if isinstance(value, (int, float)):
-        return bool(value)
-    
-    return default
-
-
-def parse_int_param(
-    value: Any,
-    default: int = 0,
-    min_value: Optional[int] = None,
-    max_value: Optional[int] = None,
-) -> int:
-    """
-    Parse an integer parameter with optional bounds.
-    
-    Args:
-        value: The value to parse
-        default: Default value if parsing fails
-        min_value: Minimum allowed value
-        max_value: Maximum allowed value
-        
-    Returns:
-        Integer value (bounded if limits provided)
-    """
-    if value is None:
-        return default
-    
-    try:
-        result = int(value)
-    except (ValueError, TypeError):
-        return default
-    
-    if min_value is not None:
-        result = max(result, min_value)
-    
-    if max_value is not None:
-        result = min(result, max_value)
-    
-    return result
