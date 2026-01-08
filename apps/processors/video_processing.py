@@ -158,9 +158,9 @@ class VideoCompressProcessor(VideoProcessor):
         if not result.success:
             logger.error(f"FFmpeg failed with return code: {result.return_code}")
             logger.error(f"FFmpeg stderr (raw): {result.stderr[-2000:]}")
-            
-            error_msg = self._parse_ffmpeg_error(result.stderr)
-            error_category = self._categorize_ffmpeg_error(result.stderr)
+
+            error_msg = self._parse_ffmpeg_error(result.stderr, result.return_code)
+            error_category = self._categorize_ffmpeg_error(result.stderr, result.return_code)
             return self._create_error_result(
                 error_msg,
                 error_category,
