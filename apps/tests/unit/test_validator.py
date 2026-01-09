@@ -1,5 +1,3 @@
-# apps/tests/unit/test_validator.py
-
 """
 Unit tests for the Validator Service.
 """

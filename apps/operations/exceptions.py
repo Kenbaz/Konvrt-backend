@@ -1,5 +1,3 @@
-# apps/operations/exceptions.py
-
 class OperationsException(Exception):
     """Base exception for all operations-related errors."""
 

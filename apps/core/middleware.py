@@ -1,5 +1,3 @@
-# apps/core/middleware.py
-
 """
 Custom middleware for the media processor application.
 

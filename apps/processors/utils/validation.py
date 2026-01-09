@@ -1,5 +1,3 @@
-# apps/processors/utils/validation.py
-
 """
 File validation utilities for media processing.
 

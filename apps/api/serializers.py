@@ -1,5 +1,3 @@
-# apps/api/serializers.py
-
 """
 Serializers for the API layer.
 

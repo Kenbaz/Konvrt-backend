@@ -1,5 +1,3 @@
-# apps/operations/services/validator.py
-
 """
 Validator Service for handling input validation.
 

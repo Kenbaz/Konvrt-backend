@@ -1,5 +1,3 @@
-# apps/tests/unit/test_workers.py
-
 """
 Unit tests for the RQ workers module.
 

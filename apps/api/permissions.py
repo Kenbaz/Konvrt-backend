@@ -1,5 +1,3 @@
-# apps/api/permissions.py
-
 """
 Custom permissions for the API layer.
 

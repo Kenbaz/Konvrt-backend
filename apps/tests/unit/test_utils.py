@@ -1,5 +1,3 @@
-# apps/tests/unit/test_utils.py
-
 """
 Unit tests for core utility functions.
 """

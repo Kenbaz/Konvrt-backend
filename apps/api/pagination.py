@@ -1,5 +1,3 @@
-# apps/api/pagination.py
-
 """
 Custom pagination classes for the API layer.
 

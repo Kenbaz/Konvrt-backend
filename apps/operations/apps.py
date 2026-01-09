@@ -1,4 +1,3 @@
-#apps/operations/apps.py
 from django.apps import AppConfig
 
 

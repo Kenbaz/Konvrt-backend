@@ -1,5 +1,3 @@
-# tests/unit/test_processor_utils.py
-
 """
 Unit tests for processor utilities.
 

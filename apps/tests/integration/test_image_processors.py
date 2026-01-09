@@ -1,5 +1,3 @@
-# apps/tests/integration/test_image_processors.py
-
 """
 Integration tests for image processing operations.
 

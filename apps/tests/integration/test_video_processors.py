@@ -1,5 +1,3 @@
-# apps/tests/integration/test_video_processors.py
-
 """
 Integration tests for video processing operations.
 

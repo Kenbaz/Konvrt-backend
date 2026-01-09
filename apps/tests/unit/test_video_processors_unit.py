@@ -1,5 +1,3 @@
-# tests/unit/test_video_processors.py
-
 """
 Unit tests for video processing operations.
 

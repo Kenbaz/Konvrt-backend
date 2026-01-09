@@ -1,5 +1,3 @@
-# apps/operations/services/cloudinary_storage.py
-
 """
 Cloudinary Storage Service for handling cloud file operations.
 

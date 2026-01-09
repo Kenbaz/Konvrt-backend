@@ -1,5 +1,3 @@
-# apps/processors/video_processing.py
-
 """
 Video processing operations.
 

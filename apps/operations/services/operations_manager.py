@@ -1,5 +1,3 @@
-# apps/operations/services/operations_manager.py
-
 """
 Operation Manager Service for handling operation lifecycle.
 

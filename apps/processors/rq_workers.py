@@ -1,5 +1,3 @@
-# apps/processors/rq_workers.py
-
 """
 RQ Worker functions for processing media operations.
 

@@ -1,5 +1,3 @@
-# apps/processors/exceptions.py
-
 """
 Exceptions for the processors app.
 

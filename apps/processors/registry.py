@@ -1,4 +1,3 @@
-# apps/processors/registry.py
 """
 Operation Registry for media processing operations.
 

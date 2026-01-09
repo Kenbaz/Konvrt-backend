@@ -1,5 +1,3 @@
-# tests/integration/test_audio_processors.py
-
 """
 Integration tests for audio processing operations.
 

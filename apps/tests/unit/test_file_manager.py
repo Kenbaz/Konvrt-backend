@@ -1,5 +1,3 @@
-# apps/tests/unit/test_file_manager.py
-
 import os
 import pytest
 from unittest.mock import patch, MagicMock

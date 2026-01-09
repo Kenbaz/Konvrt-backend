@@ -1,5 +1,3 @@
-# tests/unit/test_image_processors.py
-
 """
 Unit tests for image processing operations.
 

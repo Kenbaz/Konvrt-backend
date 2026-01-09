@@ -1,5 +1,3 @@
-# apps/operations/services/file_manager.py
-
 """
 File Manager Service for handling file operations.
 

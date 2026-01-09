@@ -1,4 +1,3 @@
-# tests/unit/test_registry.py
 """
 Unit tests for the Operation Registry.
 """

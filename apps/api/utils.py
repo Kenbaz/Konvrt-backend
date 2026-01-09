@@ -1,5 +1,3 @@
-# apps/api/utils.py
-
 """
 API utility functions for the media processing platform.
 

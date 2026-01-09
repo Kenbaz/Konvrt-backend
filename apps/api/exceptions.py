@@ -1,5 +1,3 @@
-# apps/api/api_exceptions.py
-
 """
 Custom exception handling for the API layer.
 

@@ -1,5 +1,3 @@
-# apps/processors/utils/ffmpeg.py
-
 """
 FFmpeg Wrapper for media processing operations.
 

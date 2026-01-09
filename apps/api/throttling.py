@@ -1,5 +1,3 @@
-# apps/api/throttling.py
-
 """
 Custom throttling classes for API rate limiting.
 

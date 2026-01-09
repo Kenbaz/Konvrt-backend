@@ -1,5 +1,3 @@
-# apps/operations/services/queue_manager.py
-
 """
 Queue Manager Service for RQ job queue integration.
 

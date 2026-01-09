@@ -1,5 +1,3 @@
-# tests/unit/test_operations_manager.py
-
 import pytest
 from datetime import timedelta
 from unittest.mock import patch, MagicMock, PropertyMock

@@ -1,5 +1,3 @@
-# apps/processors/audio_processing.py
-
 """
 Audio processing operations.
 

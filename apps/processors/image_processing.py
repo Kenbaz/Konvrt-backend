@@ -1,5 +1,3 @@
-# apps/processors/image_processing.py
-
 """
 Image processing operations.
 

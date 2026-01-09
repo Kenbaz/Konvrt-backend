@@ -1,5 +1,3 @@
-# apps/processors/utils/track_progress.py
-
 """
 Progress tracking utilities for media processing operations.
 

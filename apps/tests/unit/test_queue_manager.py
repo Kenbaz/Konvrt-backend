@@ -1,5 +1,3 @@
-# apps/tests/unit/test_queue_manager.py
-
 """
 Unit tests for the Queue Manager module.
 

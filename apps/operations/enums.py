@@ -1,4 +1,3 @@
-# apps/operations/enums.py
 """
 Enumerations for the operations app.
 """

@@ -1,5 +1,3 @@
-# apps/api/views.py
-
 """
 API views for the media processing platform.
 

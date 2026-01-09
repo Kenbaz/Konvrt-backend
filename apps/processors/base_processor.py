@@ -1,5 +1,3 @@
-# apps/processors/base_processor.py
-
 """
 Base Processor class for media processing operations.
 

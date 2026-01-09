@@ -1,4 +1,3 @@
-# apps/api/validators.py
 """
 Custom validators for the API layer.
 

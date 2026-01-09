@@ -1,4 +1,3 @@
-# tests/integration/test_api.py
 """
 Integration tests for the API endpoints.
 
